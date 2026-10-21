@@ -1,7 +1,9 @@
 1. Create a new GitHub repo `equity-dashboard`, upload this folder's contents.
 2. Render: New Web Service from the repo. Starter (always-on) plan + the 1GB
    disk from render.yaml. Set env vars: DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN,
-   ADMIN_PASSWORD.
+   ADMIN_PASSWORD. Optionally add DHAN_PIN and DHAN_TOTP_SECRET (same values
+   as the Nifty dashboard) so the token renews itself every day — read the
+   SECURITY note at the top of backend/auth.py first.
 3. First boot maps the 115 seeded symbols against Dhan's scrip master and
    backfills ~330 sessions of daily bars (several minutes). Watch Diagnostics:
    "Unmapped symbols" must end up empty — anything listed there needs its NSE

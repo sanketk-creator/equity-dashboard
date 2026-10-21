@@ -56,12 +56,27 @@ async def snapshot():
 
 @app.post("/api/token/update")
 async def token_update(payload: dict):
+    """Paste a token in by hand — persisted, survives restarts."""
     _check_admin(payload)
     tok = str(payload.get("access_token") or "").strip()
     if not tok:
         raise HTTPException(400, "access_token is empty")
-    creds.current.set(str(payload.get("client_id") or "").strip(), tok)
-    return {"ok": True, "status": creds.current.status()}
+    status = await hub.update_credentials(
+        tok, str(payload.get("client_id") or "").strip() or None)
+    return {"ok": True, "status": status}
+
+
+@app.post("/api/token/refresh")
+async def token_refresh(payload: dict):
+    """Generate a fresh token from the stored PIN + TOTP secret (the same
+    auto-login the Nifty dashboard uses)."""
+    _check_admin(payload)
+    from .auth import TokenRefreshError
+    try:
+        status = await hub.refresh_token_now()
+    except TokenRefreshError as exc:
+        raise HTTPException(400, str(exc))
+    return {"ok": True, "status": status}
 
 
 @app.post("/api/params")

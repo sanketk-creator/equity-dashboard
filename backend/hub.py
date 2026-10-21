@@ -55,6 +55,8 @@ class EquityHub:
         await self._load_params()
         await self._seed_constituents()
         await self._restore_state()
+        await self._load_saved_token()
+        self._tasks.append(asyncio.create_task(self._token_loop(), name="token"))
         self._tasks.append(asyncio.create_task(self._boot_data(), name="bootdata"))
         self._tasks.append(asyncio.create_task(self._clock(), name="clock"))
 
@@ -102,6 +104,83 @@ class EquityHub:
     async def _persist(self) -> None:
         await self.store.set_json("book", self.book.to_record())
         await self.store.set_json("plan", self.plan)
+
+    # ----------------------------------------------------------------- token
+
+    async def _load_saved_token(self) -> None:
+        """A token saved earlier (pasted or auto-fetched) survives restarts;
+        it beats the env token unless it is already expired."""
+        from .auth import seconds_until_expiry
+        saved = await self.store.get_meta("dhan_access_token")
+        saved_cid = await self.store.get_meta("dhan_client_id")
+        if not saved:
+            return
+        left = seconds_until_expiry(saved)
+        if left is not None and left <= 0:
+            log.info("Saved token already expired; keeping the environment one")
+            return
+        creds.current.set(saved_cid or creds.current.client_id, saved, "saved")
+        log.info("Using the saved access token (%.1f hours left)",
+                 (left or 0) / 3600)
+
+    async def update_credentials(self, access_token: str,
+                                 client_id: str | None = None,
+                                 source: str = "saved") -> dict:
+        access_token = (access_token or "").strip()
+        if not access_token:
+            raise ValueError("Access token is empty")
+        creds.current.set(client_id or creds.current.client_id,
+                          access_token, source)
+        creds.current.last_refresh_at = __import__("time").time()
+        creds.current.last_refresh_error = None
+        await self.store.set_meta("dhan_access_token", access_token)
+        await self.store.set_meta("dhan_client_id", creds.current.client_id)
+        log.info("Access token updated (source=%s)", source)
+        if self.status["boot"].startswith("boot error") or self.unmapped:
+            self._tasks.append(asyncio.create_task(self._boot_data(),
+                                                   name="bootdata-retry"))
+        return creds.current.status()
+
+    async def refresh_token_now(self) -> dict:
+        """Generate a fresh 24h token from the stored PIN + TOTP secret —
+        the same mechanism the Nifty dashboard runs (backend/auth.py)."""
+        from .auth import TokenRefreshError, fetch_access_token
+        from .creds import auto_refresh_configured, dhan_pin, totp_secret
+        if not auto_refresh_configured():
+            raise TokenRefreshError(
+                "Automatic refresh isn't set up. Add DHAN_PIN and "
+                "DHAN_TOTP_SECRET in Render, or paste a token manually.")
+        result = await fetch_access_token(creds.current.client_id,
+                                          dhan_pin(), totp_secret())
+        await self.update_credentials(result["access_token"], source="auto")
+        return creds.current.status()
+
+    async def _token_loop(self) -> None:
+        """Every 5 minutes: if auto-refresh is configured and the token is
+        missing, expired or within 3 hours of expiry, fetch a fresh one. A
+        failure is recorded and retried — and even a whole missed evening
+        costs nothing, because run_eod catches up from stored bars."""
+        from .auth import TokenRefreshError
+        from .creds import auto_refresh_configured
+        await asyncio.sleep(5)
+        while True:
+            try:
+                if auto_refresh_configured() and (
+                        not creds.current.access_token
+                        or creds.current.expired()
+                        or creds.current.expires_within(3 * 3600)):
+                    log.info("Token missing or expiring soon — refreshing")
+                    await self.refresh_token_now()
+            except TokenRefreshError as exc:
+                creds.current.last_refresh_error = str(exc)
+                creds.current.last_refresh_at = __import__("time").time()
+                log.warning("Automatic token refresh failed: %s", exc)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                creds.current.last_refresh_error = f"{type(exc).__name__}: {exc}"
+                log.exception("Token loop error")
+            await asyncio.sleep(300)
 
     # ------------------------------------------------------------ boot data
 

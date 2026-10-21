@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-BUILD = "2026-10-21-equity-v1"
+BUILD = "2026-10-21-equity-v2"
 
 # --- Dhan credentials (same pattern as the options dashboards) --------------
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "").strip()

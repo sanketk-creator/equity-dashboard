@@ -289,6 +289,8 @@ function diag(){
         <div><div class="muted">Last EOD</div><div>${esc(SNAP.status.last_eod||"never")}</div></div>
         <div><div class="muted">Last open fill</div><div>${esc(SNAP.status.last_open_fill||"never")}</div></div>
         <div><div class="muted">Unmapped symbols</div><div class="${unmapped.length?"bad":"ok"}">${unmapped.length?esc(unmapped.join(", ")):"none"}</div></div>
+        <div><div class="muted">Token auto-refresh</div><div class="${SNAP.credentials.auto_refresh?"ok":"bad"}">${SNAP.credentials.auto_refresh?"ON (PIN + TOTP set)":"off — set DHAN_PIN and DHAN_TOTP_SECRET in Render"}</div></div>
+        <div><div class="muted">Last refresh error</div><div class="${SNAP.credentials.last_refresh_error?"bad":"ok"}">${esc(SNAP.credentials.last_refresh_error||"none")}</div></div>
       </div>
       <div class="row">
         <input id="pw" type="password" placeholder="Dashboard password" value="${esc(PW)}">
@@ -299,8 +301,9 @@ function diag(){
         <input id="tokCid" placeholder="Dhan client id" style="width:140px">
         <input id="tokVal" placeholder="New Dhan access token" style="width:320px">
         <button class="act" id="tokSave">Update token</button>
+        <button class="act" id="tokRefresh">Refresh from PIN+TOTP now</button>
         <span id="tokMsg" class="muted"></span></div>
-      <div class="note">Dhan tokens expire daily. If the token is stale at the 18:30 EOD run, nothing is computed and this page says so; after renewal the next run catches up every missed session from stored daily bars — late fills use that day's recorded open, the same price a live run would have used.</div>
+      <div class="note">Dhan tokens expire daily; with DHAN_PIN and DHAN_TOTP_SECRET set in Render, the dashboard regenerates its own token (checked every 5 minutes, refreshed within 3h of expiry) — the same mechanism as the Nifty dashboard. If the token is somehow stale at the 18:30 EOD run, nothing is computed and this page says so; after renewal the next run catches up every missed session from stored daily bars — late fills use that day's recorded open, the same price a live run would have used.</div>
     </div>`;
 }
 
@@ -342,6 +345,7 @@ function wire(){
   const ro=$("runOpen"); if(ro) ro.onclick=()=>post("/api/run/openfill",{password:pw()},"opMsg");
   const ts=$("tokSave"); if(ts) ts.onclick=()=>post("/api/token/update",
     {password:pw(),client_id:$("tokCid").value,access_token:$("tokVal").value},"tokMsg");
+  const tr=$("tokRefresh"); if(tr) tr.onclick=()=>post("/api/token/refresh",{password:pw()},"tokMsg");
 }
 </script>
 </body>
