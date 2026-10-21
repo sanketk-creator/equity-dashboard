@@ -52,6 +52,18 @@ class EquityHub:
     # ----------------------------------------------------------------- boot
 
     async def start(self) -> None:
+        if not self.store.available:
+            # The paper book MUST persist. Running memory-only would silently
+            # lose positions on the next restart, so nothing starts; the page
+            # itself says exactly what to fix.
+            self.status["boot"] = (
+                f"STORAGE UNAVAILABLE: {self.store.error} — the database "
+                f"cannot be opened. On Render: add a Disk mounted at "
+                f"/var/data (Disks section, 1 GB) so DB_PATH="
+                f"{config.DB_PATH} is writable, then redeploy.")
+            self.status["errors"] = [self.status["boot"]]
+            log.error(self.status["boot"])
+            return
         await self._load_params()
         await self._seed_constituents()
         await self._restore_state()
@@ -494,6 +506,18 @@ class EquityHub:
     # --------------------------------------------------------------- snapshot
 
     async def snapshot(self) -> dict:
+        if not self.store.available:
+            return {"build": config.BUILD, "time_ist": now_ist().isoformat(),
+                    "status": self.status, "credentials": creds.current.status(),
+                    "params": self.params,
+                    "params_default": dict(config.STRATEGY_PARAMS),
+                    "param_choices": config.PARAM_CHOICES,
+                    "book": self.book.to_record(), "equity": None, "plan": None,
+                    "candidates": [], "trades": [], "curve": [],
+                    "benchmark_label": config.BENCHMARK_LABEL,
+                    "known_differences": config.KNOWN_DIFFERENCES,
+                    "unmapped": [], "corp_actions": [], "constituents": [],
+                    "stats": {}, "rates_verified": config.RATES_VERIFIED}
         curve = await self.store.equity_curve()
         trades = await self.store.trades(300)
         closes = {}

@@ -47,6 +47,12 @@ CREATE TABLE IF NOT EXISTS equity_curve (
 """
 
 
+class StorageUnavailable(RuntimeError):
+    """The database could not be opened. On Render this almost always means
+    DB_PATH points into a directory with no Disk mounted (add a 1GB disk at
+    /var/data, or fix DB_PATH)."""
+
+
 class Storage:
     def __init__(self, path: str):
         self.path = path
@@ -69,6 +75,10 @@ class Storage:
     # ---- sync core (always under the lock) ----------------------------------
 
     def _exec(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
+        if self._conn is None:
+            raise StorageUnavailable(
+                f"database unavailable ({self.error}) — on Render, attach a "
+                f"Disk at /var/data or fix DB_PATH")
         with self._lock:
             cur = self._conn.execute(sql, args)
             rows = cur.fetchall()
@@ -76,6 +86,10 @@ class Storage:
             return rows
 
     def _many(self, sql: str, rows: list[tuple]) -> None:
+        if self._conn is None:
+            raise StorageUnavailable(
+                f"database unavailable ({self.error}) — on Render, attach a "
+                f"Disk at /var/data or fix DB_PATH")
         with self._lock:
             self._conn.executemany(sql, rows)
             self._conn.commit()

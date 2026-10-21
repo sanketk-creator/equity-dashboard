@@ -394,3 +394,26 @@ def test_gate_percentile_boundary_is_inclusive_through_score_universe():
     assert scored["C"]["pct_ret6m"] == pytest.approx(0.6)
     assert scored["C"]["c2"] is True and scored["C"]["c3"] is True
     assert scored["B"]["c2"] is False             # 0.4: below the line
+
+
+def test_storage_down_boots_with_a_plain_message_not_a_crash():
+    import asyncio
+    from backend.hub import EquityHub
+    from backend import config as cfg
+    old = cfg.DB_PATH
+    cfg.DB_PATH = "/proc/definitely/not/writable/equity.db"
+    try:
+        h = EquityHub.__new__(EquityHub)
+        EquityHub.__init__(h)
+        assert h.store.available is False
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(h.start())        # must NOT raise
+            assert "STORAGE UNAVAILABLE" in h.status["boot"]
+            assert "/var/data" in h.status["boot"]
+            snap = loop.run_until_complete(h.snapshot())   # page still renders
+            assert snap["build"] and snap["status"]["boot"].startswith("STORAGE")
+        finally:
+            loop.close()
+    finally:
+        cfg.DB_PATH = old
