@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Equity 100 Momentum — Paper Live</title>
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --raised:#1d2430; --grid:#232b38;
+    --ink:#e8edf4; --ink-2:#b7c1cf; --muted:#7d8898; --axis:#2e3747;
+    --up:#2fbf84; --down:#e5604f; --s1:#3987e5; --s4:#c98500;
+  }
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.45 -apple-system,"Segoe UI",Roboto,Arial,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:12px 18px;
+    border-bottom:1px solid var(--grid)}
+  h1{font-size:16px;margin:0} h2{font-size:14px;margin:0 0 8px}
+  h3{font-size:12.5px;margin:0;color:var(--ink-2);text-transform:uppercase;
+    letter-spacing:.06em}
+  nav{display:flex;gap:4px;padding:0 18px;border-bottom:1px solid var(--grid)}
+  nav button{background:none;border:none;color:var(--muted);padding:10px 14px;
+    cursor:pointer;font-size:13.5px;border-bottom:2px solid transparent}
+  nav button.on{color:var(--ink);border-bottom-color:var(--s1)}
+  main{padding:16px 18px;max-width:1280px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--grid);border-radius:10px;
+    padding:14px;margin-bottom:14px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+  .tile .label{color:var(--muted);font-size:11.5px}
+  .tile .value{font-size:20px;font-weight:700;margin-top:2px}
+  .tile .sub{color:var(--muted);font-size:11px;margin-top:2px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{color:var(--muted);font-weight:600;text-align:right;padding:6px 8px;
+    border-bottom:1px solid var(--axis);font-size:11px;text-transform:uppercase}
+  td{padding:6px 8px;text-align:right;border-bottom:1px solid var(--grid)}
+  th:first-child,td:first-child{text-align:left}
+  .pill{display:inline-block;border:1px solid var(--axis);border-radius:20px;
+    padding:1px 9px;font-size:11px;color:var(--ink-2)}
+  .up{color:var(--up)} .down{color:var(--down)} .muted{color:var(--muted)}
+  .banner{border-left:3px solid var(--s4);background:var(--raised);
+    padding:9px 12px;border-radius:6px;margin-bottom:12px;font-size:12.5px}
+  .banner.bad{border-left-color:var(--down)}
+  input,select,button.act{background:var(--raised);border:1px solid var(--axis);
+    color:var(--ink);border-radius:6px;padding:6px 9px;font-size:12.5px}
+  button.act{cursor:pointer}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
+  canvas{width:100%;height:260px}
+  .note{color:var(--muted);font-size:11.5px;margin-top:6px}
+  .kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .ok{color:var(--up)} .bad{color:var(--down)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Equity 100 Momentum</h1>
+  <span class="pill" id="buildPill">—</span>
+  <span class="pill" id="bootPill">—</span>
+  <span class="pill" id="tokenPill">—</span>
+  <span style="flex:1"></span>
+  <span class="muted" id="clock"></span>
+</header>
+<nav id="tabs">
+  <button data-tab="portfolio" class="on">Portfolio</button>
+  <button data-tab="candidates">Candidates</button>
+  <button data-tab="universe">Universe</button>
+  <button data-tab="history">History</button>
+  <button data-tab="diag">Diagnostics</button>
+</nav>
+<main id="main"></main>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const inr=v=>v==null?"—":"₹"+Number(v).toLocaleString("en-IN",{maximumFractionDigits:0});
+const n2=v=>v==null?"—":Number(v).toFixed(2);
+const sign=v=>v==null?"":v>0?"up":v<0?"down":"";
+let SNAP=null, TAB="portfolio", PW="";
+
+document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
+  TAB=b.dataset.tab;
+  document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("on",x===b));
+  render();
+});
+
+async function poll(){
+  try{
+    const r=await fetch("/api/snapshot"); SNAP=await r.json();
+    $("buildPill").textContent=SNAP.build;
+    $("bootPill").textContent=SNAP.status.boot;
+    const c=SNAP.credentials;
+    $("tokenPill").textContent=c.configured?(c.expired?"token EXPIRED":"token ok "+(c.expires_in_hours??"?")+"h"):"no token";
+    $("tokenPill").style.color=c.configured&&!c.expired?"var(--up)":"var(--down)";
+    render();
+  }catch(e){ $("bootPill").textContent="unreachable"; }
+}
+setInterval(poll,30000); poll();
+setInterval(()=>$("clock").textContent=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata"})+" IST",1000);
+
+function sizingBanner(){
+  const mode=SNAP.params.sizing_mode;
+  if(mode==="re_level") return `<div class="banner">Sizing: <b>re_level</b> — matches the backtest convention (§10 results comparable).</div>`;
+  return `<div class="banner">Sizing: <b>carry-forward</b> (your 21 Oct decision) — the backtest used re-levelling, so the paper and backtest curves are <b>not directly comparable</b>. Editable below (sizing_mode).</div>`;
+}
+
+function render(){
+  if(!SNAP) return;
+  const m=$("main");
+  if(TAB==="portfolio") m.innerHTML=portfolio();
+  else if(TAB==="candidates") m.innerHTML=candidates();
+  else if(TAB==="universe") m.innerHTML=universe();
+  else if(TAB==="history") m.innerHTML=history();
+  else m.innerHTML=diag();
+  wire();
+  if(TAB==="history") drawCurve();
+}
+
+function portfolio(){
+  const b=SNAP.book, errs=(SNAP.status.errors||[]);
+  const held=b.positions.filter(p=>p);
+  const stats=SNAP.stats||{};
+  const plan=SNAP.plan;
+  const rows=b.positions.map((p,i)=>p?`<tr>
+      <td><b>${esc(p.symbol)}</b></td><td>${i}</td><td>${p.shares}</td>
+      <td>${n2(p.entry_price)}</td><td>${esc(p.entry_date)}</td>
+      <td>${n2(p.initial_stop)}</td>
+      <td>${p.trail_active?n2(p.trail_stop):"<span class=muted>not active</span>"}</td>
+      <td><b>${n2(p.effective_stop)}</b></td>
+      <td>${(p.achieved_weight*100).toFixed(1)}%</td></tr>`
+    :`<tr><td class="muted">— empty —</td><td>${i}</td><td colspan="7" class="muted">
+      ${b.slot_proceeds[i]==null?"never used (first fill = 10% of starting equity)":"proceeds "+inr(b.slot_proceeds[i])}</td></tr>`).join("");
+  const planHtml=plan?`
+    <h3>Frozen plan — signal ${esc(plan.signal_date)} ${plan.filled?"(filled "+esc(plan.fill_date||"")+")":"(fills at the NEXT session's open)"}</h3>
+    <table style="margin-top:6px"><thead><tr><th>Action</th><th>Symbol</th><th>Detail</th></tr></thead><tbody>
+      ${plan.exits.map(e=>`<tr><td class="down">EXIT</td><td>${esc(e.symbol)}</td><td style="text-align:left">${esc(e.reason)} — close ${n2(e.close)} vs stop ${n2(e.stop)}</td></tr>`).join("")}
+      ${plan.entries.map(e=>`<tr><td class="up">ENTER</td><td>${esc(e.symbol)}</td><td style="text-align:left">12-1 mom ${n2(e.mom121)} · signal ATR ${n2(e.atr)}</td></tr>`).join("")}
+      ${!plan.exits.length&&!plan.entries.length?`<tr><td colspan="3" class="muted">nothing to do — ${plan.qualified} qualified, book full or no stops hit</td></tr>`:""}
+    </tbody></table>`:"<div class='muted'>No plan yet — runs at the first EOD.</div>";
+  return `${errs.length?`<div class="banner bad">${errs.map(esc).join("<br>")}</div>`:""}
+    ${sizingBanner()}
+    <div class="tiles">
+      <div class="card tile"><div class="label">Equity (last close)</div>
+        <div class="value">${inr(SNAP.equity)}</div>
+        <div class="sub">started ${inr(b.starting_capital)}</div></div>
+      <div class="card tile"><div class="label">Cash</div><div class="value">${inr(b.cash)}</div></div>
+      <div class="card tile"><div class="label">Holdings</div><div class="value">${held.length} / ${b.max_holdings}</div></div>
+      <div class="card tile"><div class="label">Total return</div>
+        <div class="value ${sign(stats.total_return_pct)}">${stats.total_return_pct??"—"}%</div></div>
+      <div class="card tile"><div class="label">Max drawdown</div>
+        <div class="value">${stats.max_drawdown_pct??"—"}%</div></div>
+      <div class="card tile"><div class="label">Closed trades</div>
+        <div class="value">${stats.trades??0}</div>
+        <div class="sub">win rate ${stats.win_rate??"—"}%</div></div>
+    </div>
+    <div class="card"><h3>Book — stops are judged on the daily close only</h3>
+      <table style="margin-top:6px"><thead><tr><th>Symbol</th><th>Slot</th><th>Shares</th>
+        <th>Entry</th><th>Entry date</th><th>Initial stop</th><th>Trail stop</th>
+        <th>Effective</th><th>Weight</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="note">No take-profit, no rank exit, no open-gap exit — per the methodology. A close at or below the effective stop exits at the NEXT session's open.</div>
+    </div>
+    <div class="card">${planHtml}</div>
+    ${paramsCard()}`;
+}
+
+function paramsCard(){
+  const p=SNAP.params, d=SNAP.params_default, ch=SNAP.param_choices||{};
+  const rows=Object.keys(d).map(k=>{
+    const changed=String(p[k])!==String(d[k]);
+    const input= ch[k]
+      ? `<select class="pIn" data-k="${k}">${ch[k].map(o=>`<option ${o===String(p[k])?"selected":""}>${o}</option>`).join("")}</select>`
+      : `<input class="pIn" data-k="${k}" value="${esc(p[k])}" style="width:90px">`;
+    return `<tr${changed?' style="background:rgba(201,133,0,.08)"':""}>
+      <td style="font-family:ui-monospace,monospace">${k}</td>
+      <td>${input}</td><td class="muted">${changed?esc(d[k]):"—"}</td></tr>`;
+  }).join("");
+  return `<div class="card"><h3>Parameters — the document warns: ANY change invalidates the §10 backtest results</h3>
+    <table style="margin-top:6px"><thead><tr><th>Param</th><th>Value</th><th>Default (if changed)</th></tr></thead>
+    <tbody>${rows}</tbody></table>
+    <div class="row"><input id="pw" type="password" placeholder="Dashboard password" value="${esc(PW)}">
+      <button class="act" id="saveParams">Save</button>
+      <button class="act" id="resetParams">Reset all</button>
+      <span id="pMsg" class="muted"></span></div></div>`;
+}
+
+function candidates(){
+  const rows=(SNAP.candidates||[]).map(c=>`<tr>
+    <td><b>${esc(c.symbol)}</b></td>
+    <td class="${c.score>=4?"up":""}">${c.score}/4</td>
+    <td>${["c1","c2","c3","c4"].map(k=>c[k]?"✓":"·").join(" ")}</td>
+    <td>${c.mom121==null?"—":n2(c.mom121)}</td>
+    <td>${n2(c.close)}</td>
+    <td>${c.rankable?"yes":"<span class=down>no (needs 252 bars)</span>"}</td></tr>`).join("");
+  return `<div class="card"><h3>Today's frozen scores — computed once from the completed daily bar (nothing recomputes intraday)</h3>
+    <table style="margin-top:6px"><thead><tr><th>Symbol</th><th>Score</th>
+      <th>200DMA · 6M% · 6M/vol · Vol 5/20</th><th>12-1 momentum (rank)</th>
+      <th>Close</th><th>Rankable</th></tr></thead><tbody>${rows||'<tr><td colspan="6" class="muted">No EOD run yet.</td></tr>'}</tbody></table>
+    <div class="note">Gate: 4 of 4. Criteria 2 & 3 are percentiles within the eligible universe that day (average-rank ties, ≥0.60 inclusive). Criterion 4 is strict >1.2.</div></div>`;
+}
+
+function universe(){
+  const cons=SNAP.constituents||[];
+  const active=cons.filter(c=>c.active).length;
+  const rows=cons.map(c=>`<tr>
+    <td><b>${esc(c.symbol)}</b></td>
+    <td>${c.active?'<span class="up">active</span>':'<span class="down">excluded</span>'}</td>
+    <td>${esc(c.security_id||"UNMAPPED")}</td>
+    <td style="text-align:left">${esc(c.note||"")}</td>
+    <td><button class="act uAct" data-s="${esc(c.symbol)}" data-a="${c.active?"remove":"restore"}">${c.active?"Remove":"Restore"}</button></td></tr>`).join("");
+  const ca=(SNAP.corp_actions||[]).map(a=>`<tr>
+    <td>${a.id}</td><td><b>${esc(a.symbol)}</b></td><td>${esc(a.ex_date)}</td>
+    <td>${esc(a.kind||"")}</td><td>${a.factor??""}</td>
+    <td>${a.skip_volume?"skip":"apply"}</td><td>${esc(a.status)}</td>
+    <td>${a.status==="pending"?`<button class="act caAct" data-id="${a.id}" data-op="apply">Apply</button>
+         <button class="act caAct" data-id="${a.id}" data-op="reject">Reject</button>`:""}</td></tr>`).join("");
+  return `<div class="banner">${active} active constituents${active===100?"":" — a NIFTY 100 membership is 100 names; prune or confirm"}. Point-in-time behaviour holds from go-live forward: keep this list current when NSE announces index changes.</div>
+    <div class="card"><h3>Constituents</h3>
+      <div class="row"><input id="uSym" placeholder="SYMBOL"><input id="uNote" placeholder="note">
+        <button class="act" id="uAdd">Add</button><input id="pw" type="password" placeholder="Dashboard password" value="${esc(PW)}"><span id="uMsg" class="muted"></span></div>
+      <table style="margin-top:8px"><thead><tr><th>Symbol</th><th>Status</th><th>Security id</th><th>Note</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="note">Removing a symbol never touches an open position — the holding is managed to its own exit; the symbol just stops being eligible for NEW entries.</div></div>
+    <div class="card"><h3>Corporate actions — applying adjusts any open position (pre-state archived), scales pre-ex volume, and refetches the back-adjusted history</h3>
+      <div class="row">
+        <input id="caSym" placeholder="SYMBOL" style="width:110px">
+        <input id="caDate" type="date">
+        <input id="caKind" placeholder="bonus 1:1 / split 10→1" style="width:150px">
+        <input id="caFactor" placeholder="factor" style="width:80px">
+        <label style="font-size:12px"><input type="checkbox" id="caSkip"> skip volume</label>
+        <button class="act" id="caAdd">Queue</button><span id="caMsg" class="muted"></span></div>
+      <table style="margin-top:8px"><thead><tr><th>#</th><th>Symbol</th><th>Ex-date</th><th>Kind</th><th>Factor</th><th>Volume</th><th>Status</th><th></th></tr></thead>
+      <tbody>${ca||'<tr><td colspan="8" class="muted">none</td></tr>'}</tbody></table>
+      <div class="note">Factor: bonus a:b → (a+b)/b; split ₹X→₹Y → X/Y. Factors compound. The backtest's apply-vs-skip volume rule is a per-event switch here.</div></div>`;
+}
+
+function history(){
+  const rows=(SNAP.trades||[]).map(t=>`<tr>
+    <td><b>${esc(t.symbol)}</b></td><td>${esc(t.entry_date)}</td><td>${n2(t.entry_price)}</td>
+    <td>${t.shares}</td><td>${esc(t.exit_date)}</td><td>${n2(t.exit_price)}</td>
+    <td>${n2((t.entry_cost||0)+(t.exit_cost||0))}</td>
+    <td class="${sign(t.net_pnl)}"><b>${inr(t.net_pnl)}</b></td>
+    <td style="text-align:left">${esc(t.exit_reason)}</td></tr>`).join("");
+  return `<div class="card"><h3>Equity curve vs ${esc(SNAP.benchmark_label)}</h3>
+      <canvas id="curve"></canvas>
+      <div class="note">The benchmark line is the PRICE index — it understates the document's TRI benchmark by the dividend yield (~1.2–1.5%/yr). Both lines indexed to 100 at the first common date.</div></div>
+    <div class="card"><h3>Closed trades (costs include the flat ₹20 DP charge per scrip per sell)</h3>
+      <table style="margin-top:6px"><thead><tr><th>Symbol</th><th>In</th><th>Entry</th><th>Shares</th>
+      <th>Out</th><th>Exit</th><th>Costs</th><th>Net P&L</th><th>Why</th></tr></thead>
+      <tbody>${rows||'<tr><td colspan="9" class="muted">No closed trades yet.</td></tr>'}</tbody></table></div>`;
+}
+
+function drawCurve(){
+  const cv=$("curve"); if(!cv) return;
+  const pts=SNAP.curve||[]; if(pts.length<2){cv.getContext("2d").clearRect(0,0,cv.width,cv.height);return;}
+  const dpr=window.devicePixelRatio||1;
+  cv.width=cv.clientWidth*dpr; cv.height=260*dpr;
+  const ctx=cv.getContext("2d"); ctx.scale(dpr,dpr);
+  const W=cv.clientWidth,H=260,pad=36;
+  const eq=pts.map(p=>p.equity/pts[0].equity*100);
+  const bmBase=pts.find(p=>p.benchmark)?.benchmark;
+  const bm=pts.map(p=>p.benchmark&&bmBase?p.benchmark/bmBase*100:null);
+  const all=[...eq,...bm.filter(v=>v!=null)];
+  const lo=Math.min(...all)*0.99, hi=Math.max(...all)*1.01;
+  const X=i=>pad+(W-2*pad)*i/(pts.length-1), Y=v=>H-pad-(H-2*pad)*(v-lo)/(hi-lo||1);
+  ctx.strokeStyle="#2e3747"; ctx.beginPath();
+  for(let g=0;g<=4;g++){const y=pad+(H-2*pad)*g/4;ctx.moveTo(pad,y);ctx.lineTo(W-pad,y);}
+  ctx.stroke();
+  ctx.fillStyle="#7d8898"; ctx.font="10px sans-serif";
+  for(let g=0;g<=4;g++){const v=hi-(hi-lo)*g/4;ctx.fillText(v.toFixed(0),4,pad+(H-2*pad)*g/4+3);}
+  const line=(vals,color)=>{ctx.strokeStyle=color;ctx.lineWidth=1.8;ctx.beginPath();let started=false;
+    vals.forEach((v,i)=>{if(v==null)return;const x=X(i),y=Y(v);started?ctx.lineTo(x,y):ctx.moveTo(x,y);started=true;});ctx.stroke();};
+  line(bm,"#c98500"); line(eq,"#3987e5");
+  ctx.fillStyle="#3987e5";ctx.fillText("Strategy",pad+4,16);
+  ctx.fillStyle="#c98500";ctx.fillText(SNAP.benchmark_label,pad+70,16);
+}
+
+function diag(){
+  const kd=(SNAP.known_differences||[]).map(d=>`<tr><td style="text-align:left"><b>${esc(d[0])}</b></td><td style="text-align:left">${esc(d[1])}</td></tr>`).join("");
+  const unmapped=(SNAP.unmapped||[]);
+  return `<div class="card"><h3>Section 12 — bridge compliance</h3>
+    <div class="kv" style="margin-top:8px">
+      <div><div class="muted">Scores/ranks/stops</div><div class="ok">computed once per EOD, frozen</div></div>
+      <div><div class="muted">Fills</div><div class="ok">T close → T+1 open</div></div>
+      <div><div class="muted">Stops</div><div class="ok">daily close only, no open-gap exit</div></div>
+      <div><div class="muted">Regime filter</div><div class="ok">off</div></div>
+      <div><div class="muted">DP charge</div><div class="ok">flat ₹20 per scrip per sell</div></div>
+      <div><div class="muted">Rates verified</div><div class="${SNAP.rates_verified?"ok":"bad"}">${SNAP.rates_verified?"yes":"NO — check a contract note"}</div></div>
+    </div></div>
+    <div class="card"><h3>Known differences from the backtest (recorded, never silently absorbed)</h3>
+    <table style="margin-top:6px"><tbody>${kd}</tbody></table></div>
+    <div class="card"><h3>Operations</h3>
+      <div class="kv" style="margin-top:8px">
+        <div><div class="muted">Boot</div><div>${esc(SNAP.status.boot)}</div></div>
+        <div><div class="muted">Last EOD</div><div>${esc(SNAP.status.last_eod||"never")}</div></div>
+        <div><div class="muted">Last open fill</div><div>${esc(SNAP.status.last_open_fill||"never")}</div></div>
+        <div><div class="muted">Unmapped symbols</div><div class="${unmapped.length?"bad":"ok"}">${unmapped.length?esc(unmapped.join(", ")):"none"}</div></div>
+      </div>
+      <div class="row">
+        <input id="pw" type="password" placeholder="Dashboard password" value="${esc(PW)}">
+        <button class="act" id="runEod">Run EOD now</button>
+        <button class="act" id="runOpen">Run open fill now</button>
+        <span id="opMsg" class="muted"></span></div>
+      <div class="row">
+        <input id="tokCid" placeholder="Dhan client id" style="width:140px">
+        <input id="tokVal" placeholder="New Dhan access token" style="width:320px">
+        <button class="act" id="tokSave">Update token</button>
+        <span id="tokMsg" class="muted"></span></div>
+      <div class="note">Dhan tokens expire daily. If the token is stale at the 18:30 EOD run, nothing is computed and this page says so; after renewal the next run catches up every missed session from stored daily bars — late fills use that day's recorded open, the same price a live run would have used.</div>
+    </div>`;
+}
+
+async function post(url, body, msgId){
+  const el=$(msgId); if(el) el.textContent="…";
+  try{
+    const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(el) el.textContent=r.ok?"done":(j.detail||"failed");
+    if(r.ok){ setTimeout(poll,400); }
+    return r.ok;
+  }catch(e){ if(el) el.textContent="request failed"; return false; }
+}
+
+function pw(){ const el=$("pw"); if(el) PW=el.value; return PW; }
+
+function wire(){
+  const sp=$("saveParams");
+  if(sp) sp.onclick=()=>{
+    const overrides={};
+    document.querySelectorAll(".pIn").forEach(i=>{
+      if(String(SNAP.params_default[i.dataset.k])!==String(i.value)) overrides[i.dataset.k]=i.value;
+    });
+    post("/api/params",{password:pw(),overrides},"pMsg");
+  };
+  const rp=$("resetParams");
+  if(rp) rp.onclick=()=>post("/api/params",{password:pw(),clear:true},"pMsg");
+  const ua=$("uAdd");
+  if(ua) ua.onclick=()=>post("/api/universe",{password:pw(),symbol:$("uSym").value,action:"add",note:$("uNote").value},"uMsg");
+  document.querySelectorAll(".uAct").forEach(b=>b.onclick=()=>
+    post("/api/universe",{password:pw(),symbol:b.dataset.s,action:b.dataset.a},"uMsg"));
+  const caA=$("caAdd");
+  if(caA) caA.onclick=()=>post("/api/corp-action",{password:pw(),op:"add",symbol:$("caSym").value,
+    ex_date:$("caDate").value,kind:$("caKind").value,factor:$("caFactor").value,
+    skip_volume:$("caSkip").checked},"caMsg");
+  document.querySelectorAll(".caAct").forEach(b=>b.onclick=()=>
+    post("/api/corp-action",{password:pw(),op:b.dataset.op,id:Number(b.dataset.id)},"caMsg"));
+  const re=$("runEod"); if(re) re.onclick=()=>post("/api/run/eod",{password:pw()},"opMsg");
+  const ro=$("runOpen"); if(ro) ro.onclick=()=>post("/api/run/openfill",{password:pw()},"opMsg");
+  const ts=$("tokSave"); if(ts) ts.onclick=()=>post("/api/token/update",
+    {password:pw(),client_id:$("tokCid").value,access_token:$("tokVal").value},"tokMsg");
+}
+</script>
+</body>
+</html>
