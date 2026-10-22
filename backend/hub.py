@@ -183,6 +183,11 @@ class EquityHub:
                         or creds.current.expires_within(3 * 3600)):
                     log.info("Token missing or expiring soon — refreshing")
                     await self.refresh_token_now()
+                    # a failed EOD may have been the stale token's fault:
+                    # retry once now that a fresh token exists
+                    if self.status.get("errors") and self.status["boot"] == "ready":
+                        log.info("Retrying EOD after token refresh")
+                        await self.run_eod()
             except TokenRefreshError as exc:
                 creds.current.last_refresh_error = str(exc)
                 creds.current.last_refresh_at = __import__("time").time()

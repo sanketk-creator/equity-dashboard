@@ -45,14 +45,21 @@ class DhanRest:
                           days_back: int) -> list[dict]:
         to_d = date.today()
         from_d = to_d - timedelta(days=int(days_back * 1.7) + 30)
+        # Payload shape matches the Nifty dashboard's PROVEN daily_candles call
+        # exactly — no extra fields.
         body = {"securityId": str(security_id), "exchangeSegment": segment,
-                "instrument": instrument, "expiryCode": 0,
-                "oi": False,
+                "instrument": instrument,
                 "fromDate": from_d.isoformat(), "toDate": to_d.isoformat()}
         r = await self._client.post(f"{BASE}/charts/historical",
                                     json=body, headers=self._headers())
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # Dhan's error body says WHY (stale token vs endpoint not enabled
+            # on the subscription). Surface it verbatim instead of guessing.
+            raise RuntimeError(
+                f"Dhan {r.status_code} on charts/historical: {r.text[:300]}")
         d = r.json()
+        if isinstance(d.get("data"), dict):
+            d = d["data"]
         out = []
         ts = d.get("timestamp") or []
         for i in range(len(ts)):
