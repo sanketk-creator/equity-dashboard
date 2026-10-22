@@ -2,7 +2,7 @@ services:
   - type: web
     name: equity-dashboard
     env: python
-    plan: starter            # must stay AWAKE for the 09:20 and 18:30 IST jobs
+    plan: starter            # must stay AWAKE: live feed all session + overnight freeze
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.app:app --host 0.0.0.0 --port $PORT
     disk:

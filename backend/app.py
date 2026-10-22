@@ -161,17 +161,49 @@ async def corp_action(payload: dict):
     raise HTTPException(400, "op must be add/apply/reject")
 
 
-@app.post("/api/run/eod")
-async def run_eod(payload: dict):
+@app.post("/api/import/bars")
+async def import_bars(payload: dict):
+    """Import daily bars from a CSV produced by scripts/export_bars.py on
+    your machine: {password, csv: "<file contents>"}. Upserts everything and
+    processes any sessions the new bars complete — the data path that needs
+    NO Dhan historical subscription."""
     _check_admin(payload)
-    await hub.run_eod()
+    text = payload.get("csv") or ""
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(400, "csv is empty")
+    if len(text) > 80_000_000:
+        raise HTTPException(400, "csv too large — split it (e.g. --since)")
+    try:
+        out = await hub.import_bars_csv(text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, **out}
+
+
+@app.post("/api/run/daily")
+async def run_daily(payload: dict):
+    """Run the daily job now: fetch any missing daily bars, freeze every
+    complete session (normally automatic every few minutes)."""
+    _check_admin(payload)
+    await hub.run_daily()
     return {"ok": True, "last_eod": hub.status.get("last_eod"),
+            "daily": hub.status.get("daily"),
             "errors": hub.status.get("errors")}
 
 
-@app.post("/api/run/openfill")
-async def run_openfill(payload: dict):
+@app.post("/api/run/eod")                      # old name, same job
+async def run_eod(payload: dict):
+    return await run_daily(payload)
+
+
+@app.post("/api/freeze/force")
+async def freeze_force(payload: dict):
+    """{password, date}: freeze that session WITHOUT the symbols still
+    missing their daily bar (excluded from that day's ranking, recorded on
+    the plan). Operator decision — never automatic."""
     _check_admin(payload)
-    await hub.run_open_fill()
-    return {"ok": True, "last_open_fill": hub.status.get("last_open_fill"),
-            "errors": hub.status.get("errors")}
+    d = str(payload.get("date") or "").strip()
+    if not d:
+        raise HTTPException(400, "date required")
+    out = await hub.force_freeze_now(d)
+    return {"ok": True, **out, "daily": hub.status.get("daily")}

@@ -417,3 +417,90 @@ def test_storage_down_boots_with_a_plain_message_not_a_crash():
             loop.close()
     finally:
         cfg.DB_PATH = old
+
+
+def test_import_bars_csv_feeds_the_whole_pipeline_without_dhan(monkeypatch):
+    """The FREE-plan path: import a CSV (115-symbol universe shrunk to 3),
+    and the import itself must backfill, build the session calendar WITHOUT a
+    benchmark series, score the universe, freeze a plan, and fill the next
+    session's open — no Dhan call anywhere."""
+    import asyncio, tempfile, os
+    from backend.hub import EquityHub
+    from backend import config as cfg
+    from datetime import date, timedelta
+
+    old_db = cfg.DB_PATH
+    cfg.DB_PATH = os.path.join(tempfile.mkdtemp(), "imp.db")
+    try:
+        h = EquityHub()
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(h._seed_constituents())
+            # shrink the active universe to 3 known names
+            for c in loop.run_until_complete(h.store.constituents()):
+                loop.run_until_complete(h.store.upsert_constituent(
+                    c["symbol"], active=1 if c["symbol"] in
+                    ("TCS", "INFY", "SBIN") else 0))
+            # 300 weekday sessions of synthetic bars, TCS strongest momentum
+            lines = ["symbol,date,o,h,l,c,volume,volume_adj"]
+            d0 = date(2025, 8, 1)
+            dates = []
+            d = d0
+            while len(dates) < 300:
+                if d.weekday() < 5:
+                    dates.append(d.isoformat())
+                d += timedelta(days=1)
+            for sym, drift in (("TCS", 0.4), ("INFY", 0.3), ("SBIN", 0.2)):
+                px = 1000.0
+                for i, dt in enumerate(dates):
+                    px += drift
+                    vol = 1000 + (500 if i >= len(dates) - 4 else 0)  # c4 spike
+                    lines.append(f"{sym},{dt},{px*0.999:.2f},{px*1.01:.2f},"
+                                 f"{px*0.99:.2f},{px:.2f},{vol},{vol}")
+            from backend import hub as H
+            from datetime import datetime
+            nxt = date.fromisoformat(dates[-1]) + timedelta(days=1)
+            while nxt.weekday() >= 5:
+                nxt += timedelta(days=1)
+            monkeypatch.setattr(H, "now_ist", lambda: datetime(
+                nxt.year, nxt.month, nxt.day, 8, 0, tzinfo=cfg.IST))
+            out = loop.run_until_complete(
+                h.import_bars_csv("\n".join(lines)))
+            assert out["symbols"] == 3 and out["benchmark_included"] is False
+            # calendar fell back to majority vote; sessions processed
+            assert h.status["last_eod"] == dates[-1]
+            # with only 3 eligible names, top-40% percentile passes 1 of 3 —
+            # a plan exists either way; the engine must have scored the day
+            assert h.scored and "TCS" in h.scored
+            assert h.plan is not None and h.plan["signal_date"] == dates[-1]
+            # equity curve got a point per processed day
+            curve = loop.run_until_complete(h.store.equity_curve())
+            assert curve and curve[-1]["date"] == dates[-1]
+            # re-import of the SAME csv is idempotent (no duplicate sessions)
+            before = h.status["last_eod"]
+            loop.run_until_complete(h.import_bars_csv("\n".join(lines)))
+            assert h.status["last_eod"] == before
+        finally:
+            loop.close()
+            h.store.close()
+    finally:
+        cfg.DB_PATH = old_db
+
+
+def test_import_rejects_a_wrong_header():
+    import asyncio, tempfile, os
+    from backend.hub import EquityHub
+    from backend import config as cfg
+    old_db = cfg.DB_PATH
+    cfg.DB_PATH = os.path.join(tempfile.mkdtemp(), "imp2.db")
+    try:
+        h = EquityHub()
+        loop = asyncio.new_event_loop()
+        try:
+            with pytest.raises(ValueError, match="header"):
+                loop.run_until_complete(h.import_bars_csv("a,b,c\n1,2,3"))
+        finally:
+            loop.close()
+            h.store.close()
+    finally:
+        cfg.DB_PATH = old_db

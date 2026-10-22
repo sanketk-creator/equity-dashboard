@@ -1,13 +1,14 @@
-1. Create a new GitHub repo `equity-dashboard`, upload this folder's contents.
-2. Render: New Web Service from the repo. Starter (always-on) plan + the 1GB
-   disk from render.yaml. Set env vars: DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN,
-   ADMIN_PASSWORD. Optionally add DHAN_PIN and DHAN_TOTP_SECRET (same values
-   as the Nifty dashboard) so the token renews itself every day — read the
-   SECURITY note at the top of backend/auth.py first.
-3. First boot maps the 115 seeded symbols against Dhan's scrip master and
-   backfills ~330 sessions of daily bars (several minutes). Watch Diagnostics:
-   "Unmapped symbols" must end up empty — anything listed there needs its NSE
-   trading symbol corrected on the Universe page.
-4. Prune the Universe page to the actual current NIFTY 100 membership.
-5. The first EOD run (18:30 IST, or "Run EOD now") produces the first frozen
-   plan; fills begin the following session at 09:20.
+1. Subscribe to Dhan's Data API on the client ID the dashboard uses
+   (Dhan web → DhanHQ APIs → Data APIs; ₹499 + tax a month, renews every 30
+   days from your Dhan balance).
+2. Upload this folder's contents to the `equity-dashboard` GitHub repo
+   (uploading never deletes old files — none need deleting this time).
+3. Render already has the service, the 1 GB disk at /var/data and the env
+   vars (DB_PATH, DHAN_CLIENT_ID, DHAN_PIN, DHAN_TOTP_SECRET, ADMIN_PASSWORD).
+   No new variables. Deploy OUTSIDE market hours.
+4. First boot: maps the symbols, starts the live feed, backfills ~330
+   sessions of daily bars (several minutes), then the first freeze = go-live.
+   Diagnostics → "Unmapped symbols" must be empty; prune the Universe page to
+   the real NIFTY 100 membership.
+5. Next session: fresh entries at 09:15, hourly checks all day. Diagnostics
+   shows the feed, the hourly bars and the daily-freeze state.

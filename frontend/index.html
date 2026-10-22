@@ -23,7 +23,8 @@
   nav button.on{color:var(--ink);border-bottom-color:var(--s1)}
   main{padding:16px 18px;max-width:1280px;margin:0 auto}
   .card{background:var(--card);border:1px solid var(--grid);border-radius:10px;
-    padding:14px;margin-bottom:14px}
+    padding:14px;margin-bottom:14px;overflow-x:auto}
+  @media (max-width:640px){ main{padding:12px 16px} nav{overflow-x:auto} header{flex-wrap:wrap} }
   .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
   .tile .label{color:var(--muted);font-size:11.5px}
   .tile .value{font-size:20px;font-weight:700;margin-top:2px}
@@ -91,17 +92,20 @@ async function poll(){
     render();
   }catch(e){ $("bootPill").textContent="unreachable"; }
 }
-setInterval(poll,30000); poll();
+setInterval(poll,10000); poll();
 setInterval(()=>$("clock").textContent=new Date().toLocaleTimeString("en-IN",{timeZone:"Asia/Kolkata"})+" IST",1000);
 
 function sizingBanner(){
   const mode=SNAP.params.sizing_mode;
+  if(!mode) return "";
   if(mode==="re_level") return `<div class="banner">Sizing: <b>re_level</b> — matches the backtest convention (§10 results comparable).</div>`;
   return `<div class="banner">Sizing: <b>carry-forward</b> (your 21 Oct decision) — the backtest used re-levelling, so the paper and backtest curves are <b>not directly comparable</b>. Editable below (sizing_mode).</div>`;
 }
 
 function render(){
   if(!SNAP) return;
+  const ae=document.activeElement;
+  if(ae && $("main").contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;  // don't wipe typing
   const m=$("main");
   if(TAB==="portfolio") m.innerHTML=portfolio();
   else if(TAB==="candidates") m.innerHTML=candidates();
@@ -112,48 +116,79 @@ function render(){
   if(TAB==="history") drawCurve();
 }
 
+function alertsHtml(){
+  const al=SNAP.alerts||[];
+  return al.map(a=>`<div class="banner ${a.level==="critical"?"bad":""}">${esc(a.msg)}</div>`).join("");
+}
+
+function sessionCard(){
+  const L=SNAP.live, slots=SNAP.slots||[];
+  if(!SNAP.plan) return `<div class="card"><h3>Today's session</h3><div class="muted" style="margin-top:6px">Not live yet — the first daily freeze is GO-LIVE (both books start at ${inr(SNAP.book.starting_capital)}, no positions; nothing earlier is simulated).</div></div>`;
+  if(!L) return `<div class="card"><h3>Today's session</h3><div class="muted" style="margin-top:6px">No session in progress. Next session uses the plan frozen from ${esc(SNAP.plan.signal_date)}${SNAP.status.first_session?" · first traded session: "+esc(SNAP.status.first_session):""}.</div></div>`;
+  const bars=slots.map((lab,i)=>{
+    const st=i<L.closed?"closed":(L.cur===i?"forming":"—");
+    return `<span class="pill" style="${st==="closed"?"color:var(--ink)":st==="forming"?"color:var(--s4);border-color:var(--s4)":""}">${lab}${i===slots.length-1?" stub":""} · ${st}</span>`;}).join(" ");
+  const ev=(L.events||[]).map(e=>{
+    const k=e.kind==="entry"?'<span class="up">ENTRY</span>':e.kind==="exit"?'<span class="down">EXIT FILL</span>':'<span class="down">TRIGGER</span>';
+    const d=e.kind==="trigger"?`${e.basis==="gap_open"?"opened":"hourly close"} ${n2(e.price)} ≤ stop ${n2(e.stop)}${e.stale?" · STALE price":""}${e.closing_window_only?" · 15:15 window only":""}`
+      :e.kind==="exit"?`filled at ${e.label} open ${n2(e.price)}`:`${e.why} · ${e.shares} @ ${n2(e.price)} (${e.label} open)`;
+    return `<tr><td>${esc(e.label)}</td><td>${k}</td><td><b>${esc(e.symbol)}</b></td><td style="text-align:left">${esc(d)}</td></tr>`;}).join("");
+  const pend=(L.pending_exits||[]).concat(L.carry_exits||[]).map(e=>`<div>⏳ <b>${esc(e.symbol)}</b> — triggered ${esc(e.trigger_ts)} (close ${n2(e.trigger_price)} ≤ ${n2(e.stop)}); fills at the next ${e.trigger_label==="15:15"||e.closing_window_only?"session's open":"bar's open"}</div>`).join("");
+  const health=(L.alerts||[]).slice(-12).map(a=>`<div class="${a.level==="warn"?"down":"muted"}">${esc(a.msg)}</div>`).join("");
+  return `<div class="card"><h3>Session ${esc(L.date)} — ${L.final?"complete (commits at the next daily freeze)":"live"}${L.plan_fresh?"":' · <span class="down">STALE PLAN: stops held, no entries/refills</span>'}</h3>
+    <div style="margin:8px 0">${bars}</div>
+    ${L.waiting?`<div class="banner">${esc(L.waiting)}</div>`:""}
+    ${pend?`<div style="margin:6px 0">${pend}</div>`:""}
+    <table><thead><tr><th>Bar</th><th>Event</th><th>Symbol</th><th style="text-align:left">Detail</th></tr></thead>
+    <tbody>${ev||'<tr><td colspan="4" class="muted">no events yet</td></tr>'}</tbody></table>
+    ${health?`<div class="note" style="margin-top:8px"><b>Data health</b>${health}</div>`:""}
+    ${(L.notes||[]).length?`<div class="note">${(L.notes||[]).slice(-8).map(esc).join("<br>")}</div>`:""}
+    <div class="note">Stops are the levels frozen at the prior daily close; a bar CLOSE at or below triggers and fills at the NEXT bar's open (session open below the stop → that 09:15 open). Nothing is recomputed on a partial bar.</div></div>`;
+}
+
 function portfolio(){
-  const b=SNAP.book, errs=(SNAP.status.errors||[]);
-  const held=b.positions.filter(p=>p);
-  const stats=SNAP.stats||{};
+  const b=SNAP.book;
+  const held=(SNAP.positions||[]);
+  const st=(SNAP.stats||{}).live||{}, ss=(SNAP.stats||{}).shadow||{};
   const plan=SNAP.plan;
-  const rows=b.positions.map((p,i)=>p?`<tr>
-      <td><b>${esc(p.symbol)}</b></td><td>${i}</td><td>${p.shares}</td>
-      <td>${n2(p.entry_price)}</td><td>${esc(p.entry_date)}</td>
+  const rows=held.map(p=>`<tr>
+      <td><b>${esc(p.symbol)}</b></td><td>${p.slot+1}</td><td>${p.shares}</td>
+      <td>${n2(p.entry_price)}</td><td>${esc(p.entry_date)} ${esc(p.entry_label||"")}</td>
       <td>${n2(p.initial_stop)}</td>
       <td>${p.trail_active?n2(p.trail_stop):"<span class=muted>not active</span>"}</td>
-      <td><b>${n2(p.effective_stop)}</b></td>
-      <td>${(p.achieved_weight*100).toFixed(1)}%</td></tr>`
-    :`<tr><td class="muted">— empty —</td><td>${i}</td><td colspan="7" class="muted">
-      ${b.slot_proceeds[i]==null?"never used (first fill = 10% of starting equity)":"proceeds "+inr(b.slot_proceeds[i])}</td></tr>`).join("");
+      <td><b>${n2(p.stop)}</b></td><td>${n2(p.mark)}</td>
+      <td class="${sign(p.upnl)}">${inr(p.upnl)}</td>
+      <td>${p.pending_exit?'<span class="down">exit pending</span>':'<span class="muted">holding</span>'}</td></tr>`).join("");
+  const empty=b.positions.map((p,i)=>p?"":`<tr><td class="muted">— empty —</td><td>${i+1}</td><td colspan="9" class="muted">${b.slot_proceeds[i]==null?"never used (first fill = 10% of starting equity)":"proceeds "+inr(b.slot_proceeds[i])}</td></tr>`).join("");
   const planHtml=plan?`
-    <h3>Frozen plan — signal ${esc(plan.signal_date)} ${plan.filled?"(filled "+esc(plan.fill_date||"")+")":"(fills at the NEXT session's open)"}</h3>
-    <table style="margin-top:6px"><thead><tr><th>Action</th><th>Symbol</th><th>Detail</th></tr></thead><tbody>
-      ${plan.exits.map(e=>`<tr><td class="down">EXIT</td><td>${esc(e.symbol)}</td><td style="text-align:left">${esc(e.reason)} — close ${n2(e.close)} vs stop ${n2(e.stop)}</td></tr>`).join("")}
-      ${plan.entries.map(e=>`<tr><td class="up">ENTER</td><td>${esc(e.symbol)}</td><td style="text-align:left">12-1 mom ${n2(e.mom121)} · signal ATR ${n2(e.atr)}</td></tr>`).join("")}
-      ${!plan.exits.length&&!plan.entries.length?`<tr><td colspan="3" class="muted">nothing to do — ${plan.qualified} qualified, book full or no stops hit</td></tr>`:""}
-    </tbody></table>`:"<div class='muted'>No plan yet — runs at the first EOD.</div>";
-  return `${errs.length?`<div class="banner bad">${errs.map(esc).join("<br>")}</div>`:""}
+    <h3>Frozen plan — from the ${esc(plan.signal_date)} close · ${plan.qualified} qualified (4/4) · frozen ${esc((plan.frozen_at||"").slice(0,16).replace("T"," "))}</h3>
+    <table style="margin-top:6px"><thead><tr><th>Rank</th><th>Symbol</th><th>12-1 mom</th><th>Signal ATR</th><th>Close</th></tr></thead><tbody>
+      ${(plan.ranked||[]).slice(0,15).map((r,i)=>`<tr><td>${i+1}</td><td><b>${esc(r.symbol)}</b></td><td>${n2(r.mom121)}</td><td>${n2(r.atr)}</td><td>${n2(r.close)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">nothing qualifies — empty slots stay in cash</td></tr>'}
+    </tbody></table>
+    ${(plan.carry_exits||[]).length?`<div class="note">Carried exits (fill at the next open): ${plan.carry_exits.map(e=>esc(e.symbol)).join(", ")}</div>`:""}
+    ${(plan.excluded_missing||[]).length?`<div class="note down">Frozen WITHOUT (operator): ${plan.excluded_missing.map(esc).join(", ")}</div>`:""}
+    <div class="note">Fresh entries fill empty slots at the 09:15 open; slots freed during the session refill at the next bar's open from this list, in this order — never re-ranked intraday, never the symbol that exited today.</div>`:"<div class='muted'>No plan yet — the first daily freeze is go-live.</div>";
+  return `${alertsHtml()}
     ${sizingBanner()}
     <div class="tiles">
-      <div class="card tile"><div class="label">Equity (last close)</div>
+      <div class="card tile"><div class="label">Live equity (hourly exits)</div>
         <div class="value">${inr(SNAP.equity)}</div>
         <div class="sub">started ${inr(b.starting_capital)}</div></div>
       <div class="card tile"><div class="label">Cash</div><div class="value">${inr(b.cash)}</div></div>
       <div class="card tile"><div class="label">Holdings</div><div class="value">${held.length} / ${b.max_holdings}</div></div>
-      <div class="card tile"><div class="label">Total return</div>
-        <div class="value ${sign(stats.total_return_pct)}">${stats.total_return_pct??"—"}%</div></div>
-      <div class="card tile"><div class="label">Max drawdown</div>
-        <div class="value">${stats.max_drawdown_pct??"—"}%</div></div>
-      <div class="card tile"><div class="label">Closed trades</div>
-        <div class="value">${stats.trades??0}</div>
-        <div class="sub">win rate ${stats.win_rate??"—"}%</div></div>
+      <div class="card tile"><div class="label">Return · max DD</div>
+        <div class="value ${sign(st.total_return_pct)}">${st.total_return_pct??"—"}%</div>
+        <div class="sub">max DD ${st.max_drawdown_pct??"—"}% · ${st.trades??0} closed trades</div></div>
+      <div class="card tile"><div class="label">Shadow (daily-close rule)</div>
+        <div class="value">${inr((SNAP.shadow||{}).equity)}</div>
+        <div class="sub">return ${ss.total_return_pct??"—"}% · DD ${ss.max_drawdown_pct??"—"}%</div></div>
     </div>
-    <div class="card"><h3>Book — stops are judged on the daily close only</h3>
+    ${sessionCard()}
+    <div class="card"><h3>Live book</h3>
       <table style="margin-top:6px"><thead><tr><th>Symbol</th><th>Slot</th><th>Shares</th>
-        <th>Entry</th><th>Entry date</th><th>Initial stop</th><th>Trail stop</th>
-        <th>Effective</th><th>Weight</th></tr></thead><tbody>${rows}</tbody></table>
-      <div class="note">No take-profit, no rank exit, no open-gap exit — per the methodology. A close at or below the effective stop exits at the NEXT session's open.</div>
+        <th>Entry</th><th>Entered</th><th>Initial stop</th><th>Trail stop</th>
+        <th>Frozen stop</th><th>Last</th><th>Unreal. P&L</th><th>Status</th></tr></thead><tbody>${rows}${empty}</tbody></table>
+      <div class="note">The trailing stop ratchets once a day from the official daily close (activates at entry + 1×entry ATR; highest daily close − 3×ATR; up only). No take-profit, no rank exit.</div>
     </div>
     <div class="card">${planHtml}</div>
     ${paramsCard()}`;
@@ -228,82 +263,145 @@ function universe(){
       <div class="note">Factor: bonus a:b → (a+b)/b; split ₹X→₹Y → X/Y. Factors compound. The backtest's apply-vs-skip volume rule is a per-event switch here.</div></div>`;
 }
 
-function history(){
-  const rows=(SNAP.trades||[]).map(t=>`<tr>
-    <td><b>${esc(t.symbol)}</b></td><td>${esc(t.entry_date)}</td><td>${n2(t.entry_price)}</td>
-    <td>${t.shares}</td><td>${esc(t.exit_date)}</td><td>${n2(t.exit_price)}</td>
+function tradeRows(list, live){
+  return (list||[]).map(t=>{const m=t.meta||{};return `<tr>
+    <td><b>${esc(t.symbol)}</b></td><td>${esc(t.entry_date)}${m.entry_label?" "+esc(m.entry_label):""}</td><td>${n2(t.entry_price)}</td>
+    <td>${t.shares}</td><td>${live?esc(m.fill_timestamp||t.exit_date):esc(t.exit_date)}</td><td>${n2(t.exit_price)}</td>
     <td>${n2((t.entry_cost||0)+(t.exit_cost||0))}</td>
     <td class="${sign(t.net_pnl)}"><b>${inr(t.net_pnl)}</b></td>
-    <td style="text-align:left">${esc(t.exit_reason)}</td></tr>`).join("");
-  return `<div class="card"><h3>Equity curve vs ${esc(SNAP.benchmark_label)}</h3>
+    <td style="text-align:left">${esc(t.exit_reason)}${m.closing_window_only?' <span class="pill">15:15 only</span>':""}${m.stale_price?' <span class="pill">stale price</span>':""}${m.halt_delay_bars?` <span class="pill">halt +${m.halt_delay_bars} bar</span>`:""}</td></tr>`;}).join("");
+}
+
+function history(){
+  const cs=SNAP.comparison_summary||{};
+  const cmp=(SNAP.comparison||[]).map(c=>{const d=c.daily_rule||{};return `<tr>
+    <td><b>${esc(c.symbol)}</b></td><td>${esc(c.trigger_timestamp)}</td><td>${esc(c.fill_timestamp)}</td>
+    <td>${n2(c.trigger_price)}</td><td>${n2(c.stop)}</td><td>${n2(c.exit_price)}</td>
+    <td>${n2(d.daily_close)}</td>
+    <td class="${d.would_exit?"down":d.would_exit===false?"up":""}">${d.would_exit==null?"—":d.would_exit?"would ALSO exit":"would HOLD"}</td>
+    <td class="${sign(c.net_pnl)}">${inr(c.net_pnl)}</td></tr>`;}).join("");
+  return `<div class="card"><h3>Equity: live (hourly exits) vs shadow (daily-close rule) vs ${esc(SNAP.benchmark_label)}</h3>
       <canvas id="curve"></canvas>
-      <div class="note">The benchmark line is the PRICE index — it understates the document's TRI benchmark by the dividend yield (~1.2–1.5%/yr). Both lines indexed to 100 at the first common date.</div></div>
-    <div class="card"><h3>Closed trades (costs include the flat ₹20 DP charge per scrip per sell)</h3>
+      <div class="note">Same signals, same costs, same sizing — the gap between the two strategy lines is the exit convention alone (Hourly Exit Spec §9). The benchmark is the PRICE index (understates the TRI by ~1.2–1.5%/yr). All lines indexed to 100 at go-live.</div></div>
+    <div class="card"><h3>Every live exit vs what the daily-close rule would have done</h3>
+      <div class="kv" style="margin:8px 0">
+        <div><div class="muted">Live exits</div><div>${cs.live_exits??0}</div></div>
+        <div><div class="muted">Daily rule would also exit</div><div>${cs.daily_would_also_exit??0}</div></div>
+        <div><div class="muted">Daily rule would HOLD</div><div>${cs.daily_would_hold??0}</div></div>
+        <div><div class="muted">15:15 window only</div><div>${cs.closing_window_only??0}</div></div>
+        <div><div class="muted">On a stale price</div><div>${cs.stale_price??0}</div></div>
+      </div>
+      <table><thead><tr><th>Symbol</th><th>Trigger</th><th>Fill</th><th>Trigger px</th><th>Stop</th><th>Exit px</th><th>Daily close</th><th>Daily rule</th><th>Net P&L</th></tr></thead>
+      <tbody>${cmp||'<tr><td colspan="9" class="muted">No live exits yet.</td></tr>'}</tbody></table></div>
+    <div class="card"><h3>Live trades (exit_basis = hourly; costs include ₹20 DP per scrip per sell)</h3>
       <table style="margin-top:6px"><thead><tr><th>Symbol</th><th>In</th><th>Entry</th><th>Shares</th>
       <th>Out</th><th>Exit</th><th>Costs</th><th>Net P&L</th><th>Why</th></tr></thead>
-      <tbody>${rows||'<tr><td colspan="9" class="muted">No closed trades yet.</td></tr>'}</tbody></table></div>`;
+      <tbody>${tradeRows(SNAP.trades,true)||'<tr><td colspan="9" class="muted">No closed trades yet.</td></tr>'}</tbody></table></div>
+    <div class="card"><h3>Shadow trades (daily-close rule, fills at the next open)</h3>
+      <table style="margin-top:6px"><thead><tr><th>Symbol</th><th>In</th><th>Entry</th><th>Shares</th>
+      <th>Out</th><th>Exit</th><th>Costs</th><th>Net P&L</th><th>Why</th></tr></thead>
+      <tbody>${tradeRows(SNAP.shadow_trades,false)||'<tr><td colspan="9" class="muted">No closed trades yet.</td></tr>'}</tbody></table></div>`;
 }
 
 function drawCurve(){
   const cv=$("curve"); if(!cv) return;
-  const pts=SNAP.curve||[]; if(pts.length<2){cv.getContext("2d").clearRect(0,0,cv.width,cv.height);return;}
+  const pts=SNAP.curve||[]; const ctx0=cv.getContext("2d");
+  if(pts.length<2){ctx0.clearRect(0,0,cv.width,cv.height);ctx0.fillStyle="#7d8898";ctx0.font="12px sans-serif";ctx0.fillText("The curve starts after the second daily freeze.",12,24);return;}
   const dpr=window.devicePixelRatio||1;
   cv.width=cv.clientWidth*dpr; cv.height=260*dpr;
   const ctx=cv.getContext("2d"); ctx.scale(dpr,dpr);
   const W=cv.clientWidth,H=260,pad=36;
+  const base=v=>v;
   const eq=pts.map(p=>p.equity/pts[0].equity*100);
+  const shBase=pts.find(p=>p.shadow_equity)?.shadow_equity;
+  const sh=pts.map(p=>p.shadow_equity&&shBase?p.shadow_equity/shBase*100:null);
   const bmBase=pts.find(p=>p.benchmark)?.benchmark;
   const bm=pts.map(p=>p.benchmark&&bmBase?p.benchmark/bmBase*100:null);
-  const all=[...eq,...bm.filter(v=>v!=null)];
+  const all=[...eq,...sh.filter(v=>v!=null),...bm.filter(v=>v!=null)];
   const lo=Math.min(...all)*0.99, hi=Math.max(...all)*1.01;
   const X=i=>pad+(W-2*pad)*i/(pts.length-1), Y=v=>H-pad-(H-2*pad)*(v-lo)/(hi-lo||1);
   ctx.strokeStyle="#2e3747"; ctx.beginPath();
   for(let g=0;g<=4;g++){const y=pad+(H-2*pad)*g/4;ctx.moveTo(pad,y);ctx.lineTo(W-pad,y);}
   ctx.stroke();
   ctx.fillStyle="#7d8898"; ctx.font="10px sans-serif";
-  for(let g=0;g<=4;g++){const v=hi-(hi-lo)*g/4;ctx.fillText(v.toFixed(0),4,pad+(H-2*pad)*g/4+3);}
-  const line=(vals,color)=>{ctx.strokeStyle=color;ctx.lineWidth=1.8;ctx.beginPath();let started=false;
-    vals.forEach((v,i)=>{if(v==null)return;const x=X(i),y=Y(v);started?ctx.lineTo(x,y):ctx.moveTo(x,y);started=true;});ctx.stroke();};
-  line(bm,"#c98500"); line(eq,"#3987e5");
-  ctx.fillStyle="#3987e5";ctx.fillText("Strategy",pad+4,16);
-  ctx.fillStyle="#c98500";ctx.fillText(SNAP.benchmark_label,pad+70,16);
+  const dp=(hi-lo)<8?1:0;
+  for(let g=0;g<=4;g++){const v=hi-(hi-lo)*g/4;ctx.fillText(v.toFixed(dp),4,pad+(H-2*pad)*g/4+3);}
+  const line=(vals,color,dash)=>{ctx.strokeStyle=color;ctx.lineWidth=2;ctx.setLineDash(dash||[]);ctx.beginPath();let started=false;
+    vals.forEach((v,i)=>{if(v==null)return;const x=X(i),y=Y(v);started?ctx.lineTo(x,y):ctx.moveTo(x,y);started=true;});ctx.stroke();ctx.setLineDash([]);};
+  line(bm,"#c98500"); line(sh,"#9b7ae0",[5,4]); line(eq,"#3987e5");
+  ctx.font="11px sans-serif";
+  ctx.fillStyle="#3987e5";ctx.fillText("Live (hourly exits)",pad+4,16);
+  ctx.fillStyle="#9b7ae0";ctx.fillText("Shadow (daily close) - - -",pad+120,16);
+  ctx.fillStyle="#c98500";ctx.fillText(SNAP.benchmark_label,pad+280,16);
 }
 
 function diag(){
   const kd=(SNAP.known_differences||[]).map(d=>`<tr><td style="text-align:left"><b>${esc(d[0])}</b></td><td style="text-align:left">${esc(d[1])}</td></tr>`).join("");
   const unmapped=(SNAP.unmapped||[]);
-  return `<div class="card"><h3>Section 12 — bridge compliance</h3>
+  const dj=SNAP.status.daily||{}, rc=SNAP.recorder||{}, fd=SNAP.feed;
+  return `${alertsHtml()}<div class="card"><h3>Spec compliance — Hourly Exit Specification v1.0</h3>
     <div class="kv" style="margin-top:8px">
-      <div><div class="muted">Scores/ranks/stops</div><div class="ok">computed once per EOD, frozen</div></div>
-      <div><div class="muted">Fills</div><div class="ok">T close → T+1 open</div></div>
-      <div><div class="muted">Stops</div><div class="ok">daily close only, no open-gap exit</div></div>
-      <div><div class="muted">Regime filter</div><div class="ok">off</div></div>
+      <div><div class="muted">Score / rank / ATR / stops</div><div class="ok">daily close, frozen for the next session</div></div>
+      <div><div class="muted">Stop check</div><div class="ok">hourly CLOSE at/below frozen stop</div></div>
+      <div><div class="muted">Exit fill</div><div class="ok">next bar's open · gap → 09:15 open</div></div>
+      <div><div class="muted">Trailing stop</div><div class="ok">ratchets once a day, daily close</div></div>
+      <div><div class="muted">Fresh entries</div><div class="ok">09:15 session open</div></div>
+      <div><div class="muted">Refills</div><div class="ok">next bar after the exit fill, frozen list</div></div>
       <div><div class="muted">DP charge</div><div class="ok">flat ₹20 per scrip per sell</div></div>
       <div><div class="muted">Rates verified</div><div class="${SNAP.rates_verified?"ok":"bad"}">${SNAP.rates_verified?"yes":"NO — check a contract note"}</div></div>
     </div></div>
+    <div class="card"><h3>Daily data & freeze</h3>
+      <div class="kv" style="margin-top:8px">
+        <div><div class="muted">Go-live (signals from)</div><div>${esc(SNAP.status.go_live||"not yet")}</div></div>
+        <div><div class="muted">First traded session</div><div>${esc(SNAP.status.first_session||"—")}</div></div>
+        <div><div class="muted">Last freeze (session)</div><div>${esc(SNAP.status.last_eod||"never")}</div></div>
+        <div><div class="muted">Daily job</div><div class="${dj.target?"bad":"ok"}">${esc(dj.state||"idle")}${dj.target?" — "+esc(dj.target):""}</div></div>
+        <div><div class="muted">Last check</div><div>${esc((dj.checked_at||"").slice(0,19).replace("T"," "))}</div></div>
+      </div>
+      ${(dj.missing||[]).length?`<div class="banner bad" style="margin-top:8px">Still missing their ${esc(dj.target)} daily bar: ${dj.missing.map(esc).join(", ")}</div>`:""}
+      ${dj.message?`<div class="banner bad" style="margin-top:8px">${esc(dj.message)}${(dj.short_history||[]).length?": "+dj.short_history.map(esc).join(", "):""}</div>`:""}
+      ${(dj.no_data||[]).length?`<div class="note">No data in the last 30 days (cannot rank, not blocking): ${dj.no_data.map(esc).join(", ")}</div>`:""}
+      <div class="row">
+        <input id="pw" type="password" placeholder="Dashboard password" value="${esc(PW)}">
+        <button class="act" id="runDaily">Run daily job now</button>
+        ${dj.target?`<button class="act" id="forceFreeze" data-d="${esc(dj.target)}">Freeze ${esc(dj.target)} anyway</button>`:""}
+        <span id="opMsg" class="muted"></span></div>
+      <div class="note">Dhan's daily API is T-1: a session's completed bar appears overnight. The job checks every ${10} minutes and freezes as soon as EVERY symbol has it. It never freezes on partial data by itself — "Freeze anyway" is your call, and the excluded names are recorded on the plan.</div></div>
+    <div class="card"><h3>Live feed & hourly bars</h3>
+      <div class="kv" style="margin-top:8px">
+        <div><div class="muted">Feed</div><div class="${fd&&fd.connected?"ok":"bad"}">${fd?(fd.connected?"connected":"not connected")+" · "+fd.instruments+" symbols":"not started"}</div></div>
+        <div><div class="muted">Reconnects</div><div>${fd?fd.reconnects:"—"}</div></div>
+        <div><div class="muted">Last tick</div><div>${rc.last_tick_age_s==null?"—":rc.last_tick_age_s+"s ago"}</div></div>
+        <div><div class="muted">Ticks today</div><div>${rc.ticks??0}</div></div>
+        <div><div class="muted">Symbols with bars</div><div>${rc.symbols_with_bars??0}</div></div>
+        <div><div class="muted">Official opens</div><div>${rc.official_opens??0}</div></div>
+        <div><div class="muted">Trade-time clock</div><div>${esc(rc.ltt_mode||"—")}</div></div>
+        <div><div class="muted">Late ticks dropped</div><div>${rc.late_dropped??0}</div></div>
+      </div>
+      ${fd&&fd.last_error?`<div class="note down">${esc(fd.last_error)}</div>`:""}
+      <div class="note">Bars are built from live trades (open = first trade in the hour; 09:15 = official open; close = last trade before the hour ends) and saved every few seconds, so a restart keeps them.</div></div>
     <div class="card"><h3>Known differences from the backtest (recorded, never silently absorbed)</h3>
     <table style="margin-top:6px"><tbody>${kd}</tbody></table></div>
-    <div class="card"><h3>Operations</h3>
+    <div class="card"><h3>Token & setup</h3>
       <div class="kv" style="margin-top:8px">
         <div><div class="muted">Boot</div><div>${esc(SNAP.status.boot)}</div></div>
-        <div><div class="muted">Last EOD</div><div>${esc(SNAP.status.last_eod||"never")}</div></div>
-        <div><div class="muted">Last open fill</div><div>${esc(SNAP.status.last_open_fill||"never")}</div></div>
         <div><div class="muted">Unmapped symbols</div><div class="${unmapped.length?"bad":"ok"}">${unmapped.length?esc(unmapped.join(", ")):"none"}</div></div>
         <div><div class="muted">Token auto-refresh</div><div class="${SNAP.credentials.auto_refresh?"ok":"bad"}">${SNAP.credentials.auto_refresh?"ON (PIN + TOTP set)":"off — set DHAN_PIN and DHAN_TOTP_SECRET in Render"}</div></div>
         <div><div class="muted">Last refresh error</div><div class="${SNAP.credentials.last_refresh_error?"bad":"ok"}">${esc(SNAP.credentials.last_refresh_error||"none")}</div></div>
       </div>
-      <div class="row">
-        <input id="pw" type="password" placeholder="Dashboard password" value="${esc(PW)}">
-        <button class="act" id="runEod">Run EOD now</button>
-        <button class="act" id="runOpen">Run open fill now</button>
-        <span id="opMsg" class="muted"></span></div>
       <div class="row">
         <input id="tokCid" placeholder="Dhan client id" style="width:140px">
         <input id="tokVal" placeholder="New Dhan access token" style="width:320px">
         <button class="act" id="tokSave">Update token</button>
         <button class="act" id="tokRefresh">Refresh from PIN+TOTP now</button>
         <span id="tokMsg" class="muted"></span></div>
-      <div class="note">Dhan tokens expire daily; with DHAN_PIN and DHAN_TOTP_SECRET set in Render, the dashboard regenerates its own token (checked every 5 minutes, refreshed within 3h of expiry) — the same mechanism as the Nifty dashboard. If the token is somehow stale at the 18:30 EOD run, nothing is computed and this page says so; after renewal the next run catches up every missed session from stored daily bars — late fills use that day's recorded open, the same price a live run would have used.</div>
+      <div class="note">With DHAN_PIN and DHAN_TOTP_SECRET set in Render the dashboard renews its own token (checked every 5 minutes, refreshed within 3h of expiry). The daily bars need Dhan's paid Data API on this client ID; the live feed works on any plan.</div>
+      <div class="row">
+        <input type="file" id="barsFile" accept=".csv">
+        <button class="act" id="barsImport">Import bars CSV (optional, one-time)</button>
+        <span id="barsMsg" class="muted"></span>
+      </div>
+      <div class="note">Not needed with the Data API (the dashboard backfills ~330 sessions itself). Importing never simulates the past: the first freeze after it is go-live.</div>
     </div>`;
 }
 
@@ -341,11 +439,21 @@ function wire(){
     skip_volume:$("caSkip").checked},"caMsg");
   document.querySelectorAll(".caAct").forEach(b=>b.onclick=()=>
     post("/api/corp-action",{password:pw(),op:b.dataset.op,id:Number(b.dataset.id)},"caMsg"));
-  const re=$("runEod"); if(re) re.onclick=()=>post("/api/run/eod",{password:pw()},"opMsg");
-  const ro=$("runOpen"); if(ro) ro.onclick=()=>post("/api/run/openfill",{password:pw()},"opMsg");
+  const rd=$("runDaily"); if(rd) rd.onclick=()=>post("/api/run/daily",{password:pw()},"opMsg");
+  const ff=$("forceFreeze"); if(ff) ff.onclick=()=>{
+    if(!confirm("Freeze "+ff.dataset.d+" WITHOUT the missing symbols? They are excluded from that day's ranking.")) return;
+    post("/api/freeze/force",{password:pw(),date:ff.dataset.d},"opMsg");};
   const ts=$("tokSave"); if(ts) ts.onclick=()=>post("/api/token/update",
     {password:pw(),client_id:$("tokCid").value,access_token:$("tokVal").value},"tokMsg");
   const tr=$("tokRefresh"); if(tr) tr.onclick=()=>post("/api/token/refresh",{password:pw()},"tokMsg");
+  const bi=$("barsImport"); if(bi) bi.onclick=()=>{
+    const f=$("barsFile").files[0];
+    if(!f){ $("barsMsg").textContent="choose the CSV first"; return; }
+    $("barsMsg").textContent="uploading "+Math.round(f.size/1e6)+" MB…";
+    const rd=new FileReader();
+    rd.onload=()=>post("/api/import/bars",{password:pw(),csv:rd.result},"barsMsg");
+    rd.readAsText(f);
+  };
 }
 </script>
 </body>

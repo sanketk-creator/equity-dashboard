@@ -1,29 +1,43 @@
 # Equity 100 Momentum — paper-live monitor
 
-Paper-trades the confidence-scored NIFTY 100 momentum strategy exactly as the
-backtest methodology document (v1.0, 21 Oct 2026) specifies, and records every
-known difference on the Diagnostics page. LONG-ONLY PAPER TRADING — nothing
-here places real orders.
+Paper-trades the confidence-scored NIFTY 100 momentum strategy: signals as
+the backtest methodology document (v1.0, 21 Oct 2026) specifies, exits as the
+**Hourly Exit Specification v1.0** (21 Oct 2026) specifies. Every known
+difference from the backtest is listed on the Diagnostics page. LONG-ONLY
+PAPER TRADING — nothing here places real orders.
 
-## The daily cycle
-- **18:30 IST (EOD):** ingest the day's completed bars (Dhan), compute the
-  4-criteria scores, 12-1 ranks and stop checks ONCE, freeze the plan.
-- **09:20 IST (next session):** fill the frozen plan at the live open —
-  exits first, then refills in rank order.
-- Stops are judged on the daily close only. No take-profit, no rank exit,
-  no open-gap exit, no regime filter.
-- If the service was down (or the token stale), the next EOD catches up every
-  missed session from stored daily bars; late fills use that day's recorded
-  open — the same price a live run would have used.
+## Two books, same signals
+- **Live** — stops checked on HOURLY closes (at or below the stop frozen at
+  the prior daily close), filled at the next hourly bar's open.
+- **Shadow** — the backtest's daily-close rule on the same signals, so the
+  effect of the exit convention is visible on its own (spec §9). Every live
+  exit also records what the daily rule would have done.
 
-## Deploy
-Upload this repo to GitHub; Render auto-deploys per render.yaml. Needs an
-ALWAYS-ON instance (the scheduler must be awake at 09:20 and 18:30 IST) and a
-persistent disk for the database. Set DHAN_CLIENT_ID, DHAN_ACCESS_TOKEN and
-ADMIN_PASSWORD in Render's Environment tab. The Dhan token expires daily —
-renew it from the Diagnostics page.
+## The day
+- **Overnight / pre-open — daily freeze.** Dhan's daily historical API is
+  T-1, so session T's completed bar appears overnight. Every 10 minutes the
+  job checks; once EVERY symbol has the bar it commits session T, ratchets
+  trailing stops from T's close, scores/ranks, and freezes the plan for the
+  next session. It never freezes on partial data by itself (Diagnostics →
+  "Freeze anyway" is the operator's call). Not frozen by 09:05 → red banner;
+  the session still checks stops at the last frozen levels but takes no
+  entries or refills until the freeze lands, and a late freeze then replays
+  the session exactly as an on-time one would have.
+- **09:15–15:30 — live session.** The Dhan feed builds hourly bars
+  (09:15 … 14:15 + the 15:15 stub). Fresh entries fill at the 09:15 official
+  open; a position opening at/below its stop exits at that open (slot
+  refills 10:15); a bar close at/below the stop exits at the next bar's open
+  and the slot refills one bar later from the frozen ranked list; a breach on
+  the 15:15 stub fills at the next session's open and is flagged.
+- The session is a deterministic replay of (committed book, frozen plan,
+  recorded bars), saved every few seconds — a restart loses nothing recorded.
 
-## Conventions
-See backend/config.py KNOWN_DIFFERENCES and the methodology document. The
-sizing default is carry_forward (user decision, 21 Oct 2026); the backtest
-used re_level — flip it on the Parameters card to make curves comparable.
+## Data needed
+- Live feed: any Dhan plan.
+- Daily bars: Dhan's **Data API** subscription on the same client ID
+  (₹499 + tax / month). Without it the daily freeze cannot run (DH-902).
+- Hourly history is NOT needed — the dashboard records its own hourly bars.
+
+## Go-live
+The first freeze is go-live: both books start with the starting capital and
+no positions. Nothing earlier is ever simulated.

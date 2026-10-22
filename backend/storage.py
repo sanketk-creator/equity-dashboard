@@ -44,7 +44,21 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE TABLE IF NOT EXISTS equity_curve (
     date TEXT PRIMARY KEY,
     equity REAL, cash REAL, holdings INTEGER, benchmark REAL);
+CREATE TABLE IF NOT EXISTS hourly_bars (
+    symbol TEXT NOT NULL, date TEXT NOT NULL, label TEXT NOT NULL,
+    o REAL, h REAL, l REAL, c REAL, n INTEGER,
+    PRIMARY KEY (symbol, date, label));
+CREATE TABLE IF NOT EXISTS session_opens (
+    symbol TEXT NOT NULL, date TEXT NOT NULL, open REAL, src TEXT,
+    PRIMARY KEY (symbol, date));
 """
+
+# Columns added after first deploy: (table, column, DDL type). Added in place
+# on boot — existing rows keep their values (old trades are all live-book).
+MIGRATIONS = [
+    ("trades", "book", "TEXT NOT NULL DEFAULT 'live'"),
+    ("equity_curve", "shadow_equity", "REAL"),
+]
 
 
 class StorageUnavailable(RuntimeError):
@@ -65,6 +79,12 @@ class Storage:
             self._conn = sqlite3.connect(path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             self._conn.executescript(SCHEMA)
+            for table, col, ddl in MIGRATIONS:
+                have = {r["name"] for r in self._conn.execute(
+                    f"PRAGMA table_info({table})").fetchall()}
+                if col not in have:
+                    self._conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
             self._conn.commit()
             self.available = True
         except Exception as exc:                 # storage down ≠ dashboard down
@@ -154,6 +174,26 @@ class Storage:
             "WHERE symbol=? AND date < ? AND volume_adj IS NOT NULL",
             (factor, symbol, ex_date))
 
+    async def dates_by_coverage(self, min_count: int) -> list[str]:
+        """Dates on which at least `min_count` symbols have a bar — the
+        session calendar when no benchmark index series exists."""
+        rows = await asyncio.to_thread(
+            self._exec,
+            "SELECT date, COUNT(*) AS n FROM bars WHERE substr(symbol,1,2) != '__' "
+            "GROUP BY date HAVING n >= ? ORDER BY date",
+            (min_count,))
+        return [r["date"] for r in rows]
+
+    async def latest_bar_dates(self) -> dict[str, str]:
+        rows = await asyncio.to_thread(
+            self._exec, "SELECT symbol, MAX(date) AS d FROM bars GROUP BY symbol", ())
+        return {r["symbol"]: r["d"] for r in rows}
+
+    async def bars_on(self, date: str) -> dict[str, dict]:
+        rows = await asyncio.to_thread(
+            self._exec, "SELECT * FROM bars WHERE date=?", (date,))
+        return {r["symbol"]: dict(r) for r in rows}
+
     async def dates_with_bars(self, symbol: str) -> set[str]:
         rows = await asyncio.to_thread(
             self._exec, "SELECT date FROM bars WHERE symbol=?", (symbol,))
@@ -220,26 +260,85 @@ class Storage:
             self._exec,
             "INSERT INTO trades(symbol,slot,entry_date,entry_price,shares,"
             "exit_date,exit_price,entry_cost,exit_cost,gross_pnl,net_pnl,"
-            "exit_reason,meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "exit_reason,meta,book) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (t["symbol"], t.get("slot"), t["entry_date"], t["entry_price"],
              t["shares"], t["exit_date"], t["exit_price"], t["entry_cost"],
              t["exit_cost"], t["gross_pnl"], t["net_pnl"], t["exit_reason"],
-             json.dumps(t.get("meta") or {})))
+             json.dumps(t.get("meta") or {}), t.get("book", "live")))
 
-    async def trades(self, limit: int = 500) -> list[dict]:
-        rows = await asyncio.to_thread(
-            self._exec, "SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
-        return [dict(r) for r in rows]
+    async def trades(self, limit: int = 500,
+                     book: str | None = None) -> list[dict]:
+        if book:
+            rows = await asyncio.to_thread(
+                self._exec, "SELECT * FROM trades WHERE book=? "
+                "ORDER BY id DESC LIMIT ?", (book, limit))
+        else:
+            rows = await asyncio.to_thread(
+                self._exec, "SELECT * FROM trades ORDER BY id DESC LIMIT ?",
+                (limit,))
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["meta"] = json.loads(d.get("meta") or "{}")
+            except (TypeError, ValueError):
+                d["meta"] = {}
+            out.append(d)
+        return out
 
     async def upsert_equity_point(self, date: str, equity: float, cash: float,
-                                  holdings: int, benchmark: float | None) -> None:
+                                  holdings: int, benchmark: float | None,
+                                  shadow_equity: float | None = None) -> None:
         await asyncio.to_thread(
             self._exec,
-            "INSERT INTO equity_curve(date,equity,cash,holdings,benchmark) "
-            "VALUES(?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
+            "INSERT INTO equity_curve(date,equity,cash,holdings,benchmark,"
+            "shadow_equity) VALUES(?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
             "equity=excluded.equity,cash=excluded.cash,"
-            "holdings=excluded.holdings,benchmark=excluded.benchmark",
-            (date, equity, cash, holdings, benchmark))
+            "holdings=excluded.holdings,benchmark=excluded.benchmark,"
+            "shadow_equity=excluded.shadow_equity",
+            (date, equity, cash, holdings, benchmark, shadow_equity))
+
+    # ---- hourly bars (live book) -----------------------------------------------
+
+    async def upsert_hourly(self, date: str, rows: list[tuple]) -> None:
+        """rows: (symbol, label, o, h, l, c, n)"""
+        if not rows:
+            return
+        await asyncio.to_thread(
+            self._many,
+            "INSERT INTO hourly_bars(symbol,date,label,o,h,l,c,n) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(symbol,date,label) DO UPDATE "
+            "SET o=excluded.o,h=excluded.h,l=excluded.l,c=excluded.c,"
+            "n=excluded.n",
+            [(r[0], date, *r[1:]) for r in rows])
+
+    async def hourly_for_date(self, date: str) -> dict[str, dict[str, dict]]:
+        rows = await asyncio.to_thread(
+            self._exec, "SELECT * FROM hourly_bars WHERE date=?", (date,))
+        out: dict[str, dict[str, dict]] = {}
+        for r in rows:
+            out.setdefault(r["symbol"], {})[r["label"]] = {
+                "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"], "n": r["n"]}
+        return out
+
+    async def hourly_dates_after(self, date: str) -> list[str]:
+        rows = await asyncio.to_thread(
+            self._exec, "SELECT DISTINCT date FROM hourly_bars WHERE date > ? "
+            "ORDER BY date", (date,))
+        return [r["date"] for r in rows]
+
+    async def set_session_open(self, date: str, symbol: str, price: float,
+                               src: str) -> None:
+        await asyncio.to_thread(
+            self._exec,
+            "INSERT INTO session_opens(symbol,date,open,src) VALUES(?,?,?,?) "
+            "ON CONFLICT(symbol,date) DO UPDATE SET open=excluded.open,"
+            "src=excluded.src", (symbol, date, price, src))
+
+    async def session_opens(self, date: str) -> dict[str, tuple[float, str]]:
+        rows = await asyncio.to_thread(
+            self._exec, "SELECT * FROM session_opens WHERE date=?", (date,))
+        return {r["symbol"]: (r["open"], r["src"]) for r in rows}
 
     async def equity_curve(self) -> list[dict]:
         rows = await asyncio.to_thread(

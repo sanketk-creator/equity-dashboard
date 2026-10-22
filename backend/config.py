@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 
-BUILD = "2026-10-22-equity-v4"
+BUILD = "2026-10-22-equity-v6-hourly"
 
 # --- Dhan credentials (same pattern as the options dashboards) --------------
 DHAN_CLIENT_ID = os.getenv("DHAN_CLIENT_ID", "").strip()
@@ -64,9 +64,45 @@ COST_DP_PER_SELL = float(os.getenv("COST_DP_PER_SELL", "20.0"))             # fl
 RATES_VERIFIED = os.getenv("RATES_VERIFIED", "0") == "1"
 
 # --- Scheduler ---------------------------------------------------------------
-EOD_TIME = os.getenv("EOD_TIME", "18:30")       # compute from completed bars
-OPEN_FILL_TIME = os.getenv("OPEN_FILL_TIME", "09:20")  # fills at today's open
+# Dhan's DAILY historical API is T-1 (support article: "provides data only up
+# to the previous trading day"), so day T's completed bar appears overnight.
+# The daily job polls until every symbol has it, then freezes the plan for
+# the next session — normally well before 09:15. Unfrozen at FREEZE_ALERT the
+# dashboard goes red: the session still runs (stops held at the last frozen
+# levels) but takes NO entries or refills until the freeze lands, and a late
+# freeze replays the session exactly as an on-time one would have.
+DAILY_POLL_MINUTES = int(os.getenv("DAILY_POLL_MINUTES", "10"))
+FREEZE_ALERT = os.getenv("FREEZE_ALERT", "09:05")
 BACKFILL_SESSIONS = int(os.getenv("BACKFILL_SESSIONS", "330"))
+
+# Hourly bars: late packets for a bar get this long after the bar's end
+# before the bar is treated as complete (and checked).
+BAR_GRACE_SECONDS = float(os.getenv("BAR_GRACE_SECONDS", "10"))
+# The feed is "down" when nothing has arrived for this long in the session.
+FEED_STALE_SECONDS = float(os.getenv("FEED_STALE_SECONDS", "120"))
+
+# --- Dhan live feed (verbatim from the Nifty dashboard's PROVEN client) -------
+DHAN_FEED_URL = "wss://api-feed.dhan.co"
+SEGMENT_NAME_BY_CODE = {
+    0: "IDX_I", 1: "NSE_EQ", 2: "NSE_FNO", 3: "NSE_CURRENCY",
+    4: "BSE_EQ", 5: "MCX_COMM", 7: "BSE_CURRENCY", 8: "BSE_FNO",
+}
+REQ_SUBSCRIBE_TICKER = 15
+REQ_SUBSCRIBE_QUOTE = 17
+REQ_SUBSCRIBE_FULL = 21
+RESP_TICKER = 2
+RESP_QUOTE = 4
+RESP_OI = 5
+RESP_PREV_CLOSE = 6
+RESP_FULL = 8
+RESP_DISCONNECT = 50
+MAX_INSTRUMENTS_PER_MESSAGE = 100
+
+
+def feed_url() -> str:
+    from .creds import current
+    return (f"{DHAN_FEED_URL}?version=2&token={current.access_token}"
+            f"&clientId={current.client_id}&authType=2")
 
 # --- Benchmark ---------------------------------------------------------------
 # NIFTY 50 PRICE index (Dhan id 13, IDX_I). NOT the TRI the document compares
@@ -97,6 +133,27 @@ SEED_EXCLUDED = {"IDEA": "Excluded per methodology §3.5 (unadjusted 2019 rights
 
 # --- Known differences from the backtest (Section 12 compliance panel) --------
 KNOWN_DIFFERENCES = [
+    ("Exit convention (Hourly Exit Spec §9)", "The LIVE book exits on HOURLY "
+     "closes (at-or-below the stop frozen at the prior daily close) and fills "
+     "at the next hourly bar's open; the backtest exits on the DAILY close. "
+     "Expected, not a bug: hourly exits fire more often and earlier. Every "
+     "live exit is tagged exit_basis=hourly with what the daily rule would "
+     "have done, and a SHADOW book runs the daily rule on the same signals "
+     "so the two equity curves sit side by side."),
+    ("Hourly bars source", "Built by the dashboard from the live Dhan feed: "
+     "open = first trade in the hour (09:15 = the official session open), "
+     "close = last trade before the hour ends. Not Dhan's historical 60-min "
+     "candles; small differences from a downloaded hourly series are "
+     "possible."),
+    ("15:15 closing window", "Live data has the 15:15-15:30 stub; the "
+     "historical feed lacks it from 2026-08-03. Every exit triggered only in "
+     "that window is flagged closing_window_only."),
+    ("Gap-exit refill", "A position that opens at/below its stop exits at "
+     "that 09:15 open; its slot refills at the 10:15 open (operator "
+     "decision, 22 Oct 2026, literal spec §6)."),
+    ("Daily-data timing", "Dhan's daily historical API is T-1, so the "
+     "freeze for session T runs overnight / pre-open rather than at T's "
+     "close. Same bar, same numbers; only the wall-clock time differs."),
     ("Sizing convention", "carry_forward (user decision, 21 Oct 2026). The "
      "backtest and every number in §10 used re_level — the paper and backtest "
      "curves are NOT directly comparable while this is set. Editable on the "

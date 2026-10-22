@@ -19,6 +19,8 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from .config import IST
+
 from . import config, creds
 
 log = logging.getLogger("equity.rest")
@@ -43,7 +45,9 @@ class DhanRest:
 
     async def _historical(self, security_id: str, segment: str, instrument: str,
                           days_back: int) -> list[dict]:
-        to_d = date.today()
+        # IST date, not the container's (UTC on Render): before 05:30 IST the
+        # UTC date is still yesterday, which would cut off the newest bar.
+        to_d = datetime.now(IST).date()
         from_d = to_d - timedelta(days=int(days_back * 1.7) + 30)
         # Payload shape matches the Nifty dashboard's PROVEN daily_candles call
         # exactly — no extra fields.

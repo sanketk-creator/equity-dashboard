@@ -1,6 +1,13 @@
 """
 The strategy engine — pure logic, no I/O, so every convention is testable.
 
+Since v6 this module serves two roles:
+  * the SIGNAL side for both books — metrics, the four-criteria score, the
+    12-1 ranking, and the once-a-day trail ratchet (ratchet_trails);
+  * the complete DAILY-CLOSE rule (evaluate_close + fill_open) that the
+    SHADOW book runs. The LIVE book's exits are hourly — backend/intraday.py.
+The rules below describe the daily-close rule as the backtest ran it.
+
 Replicates the methodology document's Section 12 bridge rules:
   1. Scores, ranks and stop levels are computed ONCE, from completed daily
      bars, and frozen as a Plan for the following session.
@@ -98,6 +105,7 @@ class Position:
     trail_stop: float | None = None
     target_weight: float = 0.0
     achieved_weight: float = 0.0
+    entry_label: str = "09:15"      # hourly book: bar whose OPEN filled it
 
     @property
     def effective_stop(self) -> float:
@@ -164,22 +172,21 @@ class Book:
 
 # ==================================================================== plan
 
-def evaluate_close(book: Book, scored: dict[str, dict], date: str,
-                   eligible: set[str], p: dict) -> dict:
+def ratchet_trails(book: Book, scored: dict[str, dict], p: dict) -> None:
     """
-    Day T close: update trail state on today's close, queue stop exits
-    (close at-or-below the effective stop), rank candidates, and freeze the
-    Plan for T+1's open. Mutates only trail state; fills happen in fill_open.
+    Day T close: trail activation and ratchet from today's COMPLETED daily
+    bar (hourly spec §5: once per day, from the daily close, up only).
+    Activation = first daily close at or above entry + 1 x entry ATR; level =
+    highest daily close since activation - 3 x current ATR. A position with
+    no bar today is left untouched.
     """
-    exits: list[dict] = []
     for pos in book.positions:
         if pos is None:
             continue
         m = scored.get(pos.symbol) or {}
         close, atr = m.get("close"), m.get("atr14")
         if close is None:
-            continue                       # no bar today: stop cannot be judged
-        # trail activation and ratchet, from today's completed bar
+            continue                       # no bar today: nothing to ratchet
         act_level = pos.entry_price + float(p["trail_activation_mult"]) * pos.entry_atr
         if not pos.trail_active and close >= act_level:
             pos.trail_active = True
@@ -190,12 +197,47 @@ def evaluate_close(book: Book, scored: dict[str, dict], date: str,
                 cand = pos.highest_close - float(p["atr_mult_trail"]) * atr
                 if pos.trail_stop is None or cand > pos.trail_stop:
                     pos.trail_stop = cand          # ratchets up only
+
+
+def stop_reason(pos: Position) -> str:
+    return ("Trailing stop" if pos.trail_active and pos.trail_stop is not None
+            and pos.trail_stop >= pos.initial_stop else "Initial stop")
+
+
+def ranked_candidates(scored: dict[str, dict], eligible: set[str],
+                      p: dict) -> list[dict]:
+    """Every name passing the gate THAT DAY, best 12-1 momentum first. The
+    hourly book freezes this whole list for the next session's 09:15 entries
+    and intraday refills (spec §6: never re-ranked during the session)."""
+    names = sorted(
+        (s for s, m in scored.items()
+         if s in eligible and m["score"] >= int(p["score_gate"])
+         and m["rankable"] and m.get("atr14") is not None),
+        key=lambda s: scored[s]["mom121"], reverse=True)
+    return [{"symbol": s, "mom121": round(scored[s]["mom121"], 6),
+             "atr": scored[s]["atr14"], "close": scored[s]["close"]}
+            for s in names]
+
+
+def evaluate_close(book: Book, scored: dict[str, dict], date: str,
+                   eligible: set[str], p: dict) -> dict:
+    """
+    DAILY-CLOSE RULE (the backtest's convention; used by the SHADOW book).
+    Day T close: update trail state on today's close, queue stop exits
+    (close at-or-below the effective stop), rank candidates, and freeze the
+    Plan for T+1's open. Mutates only trail state; fills happen in fill_open.
+    """
+    ratchet_trails(book, scored, p)
+    exits: list[dict] = []
+    for pos in book.positions:
+        if pos is None:
+            continue
+        close = (scored.get(pos.symbol) or {}).get("close")
+        if close is None:
+            continue                       # no bar today: stop cannot be judged
         if close <= pos.effective_stop:
             exits.append({"slot": pos.slot, "symbol": pos.symbol,
-                          "reason": ("Trailing stop" if pos.trail_active
-                                     and pos.trail_stop is not None
-                                     and pos.trail_stop >= pos.initial_stop
-                                     else "Initial stop"),
+                          "reason": stop_reason(pos),
                           "stop": round(pos.effective_stop, 2),
                           "close": close})
 
@@ -295,8 +337,8 @@ def fill_open(book: Book, plan: dict, opens: dict[str, float], fill_date: str,
                          f"share at ₹{px:,.2f}")
             continue
         bc = costs.buy_cost(px, shares)
+        eq = book.equity(closes_for_equity)        # pre-trade equity
         book.cash -= shares * px + bc
-        eq = book.equity(closes_for_equity)
         pos = Position(
             symbol=s, slot=slot, shares=float(shares), entry_price=px,
             entry_date=fill_date, entry_cost=bc, entry_atr=float(ent["atr"]),
