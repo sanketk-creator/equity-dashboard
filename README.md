@@ -41,3 +41,25 @@ PAPER TRADING — nothing here places real orders.
 ## Go-live
 The first freeze is go-live: both books start with the starting capital and
 no positions. Nothing earlier is ever simulated.
+
+---
+
+# Strategies 2 and 3 (page: /strategies)
+
+Momentum Barbell 20 and Sector Momentum 12 from the "Three Systematic Equity
+Strategies" specification (29 Oct 2026), paper trading, Rs 2,00,000 each.
+Separate code (`backend/s23/`), separate database (`strategies.db` on the
+same Render disk) — Strategy 1 above is untouched.
+
+- Daily bars from Dhan (T-1): each session is evaluated once its completed
+  bar is in (or at 08:45 before the next open with whatever arrived, the
+  missing names recorded), and orders fill at the next session's official
+  open. More than one missed session halts both until you approve on the page.
+- Day 1 fills every seat at once (initial build, flagged).
+- NSE calendar on the page (2026 holidays + Muhurat 8 Nov); a reminder from
+  15 Dec to enter next year's list. Monthly NIFTY 500 upload (NSE
+  ind_nifty500list) with a review-then-apply step.
+- Rules follow the backtest code (`barbell20/factor_test.py` config 2 and
+  `sector_rotation.py` + `d1_exit4.py`); where the spec differs, the code
+  wins and the difference is listed on the Data & Audit tab. On synthetic
+  markets the dashboard engine reproduces those engines fill for fill.

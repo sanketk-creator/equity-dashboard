@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import config, creds
 from .hub import hub
+from .s23.api import router as s23_router
+from .s23.hub import s23hub
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)-7s %(name)-10s %(message)s")
@@ -20,11 +22,22 @@ log = logging.getLogger("equity.app")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await hub.start()
+    # Strategies 2 and 3: separate hub, separate database file. A failure
+    # there must never stop Strategy 1, so it is started defensively.
+    try:
+        await s23hub.start()
+    except Exception:
+        log.exception("Strategies 2/3 failed to start — Strategy 1 unaffected")
     yield
+    try:
+        await s23hub.stop()
+    except Exception:
+        pass
     await hub.stop()
 
 
 app = FastAPI(title="Equity 100 Momentum — paper-live", lifespan=lifespan)
+app.include_router(s23_router)
 FRONTEND = os.path.join(os.path.dirname(__file__), "..", "frontend")
 
 
