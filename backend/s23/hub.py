@@ -44,7 +44,7 @@ from .store import Store
 log = logging.getLogger("s23")
 
 VERSION = "spec-1.0 (2026-10-29)"
-S23_BUILD = "2026-10-30-s23-v1"
+S23_BUILD = "2026-10-30-s23-v2"
 STRATS = {
     "barbell": {"name": "momentum_barbell_20", "label": "Momentum Barbell 20",
                 "capital": 200_000.0},
@@ -1223,8 +1223,11 @@ class StrategiesHub:
                          "tradable": len([s for s in active if s not in U.EXCLUDED]),
                          "sector_mapped": len([s for s in active if rows[s]["sector"]
                                                and s not in U.EXCLUDED]),
+                         # excluded names (REITs/InvITs etc.) are never traded,
+                         # so a missing Dhan id for them is not a problem
                          "unmapped_ids": sorted(s for s in active
-                                                if not rows[s]["security_id"]),
+                                                if not rows[s]["security_id"]
+                                                and s not in U.EXCLUDED),
                          "left_but_held": sorted(s for s in self._held()
                                                  if not (rows.get(s) or {}).get("active")),
                          "last_applied": last_applied},

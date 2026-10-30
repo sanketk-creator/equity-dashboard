@@ -320,3 +320,18 @@ def test_cash_short_trims_the_largest_buy_by_value():
     r = execute(b, dec, {"BIG": 100.0, "SML": 100.0}, {}, "2026-11-03")
     # targets 60 and 40 = Rs 10,000 + costs > Rs 10,000 cash -> trim BIG
     assert b.positions["SML"].shares == 40 and b.positions["BIG"].shares < 60
+
+
+def test_pasted_list_from_excel_is_tab_separated_and_parses_the_same():
+    """IT blocks file upload, so the list is pasted. From Excel the columns
+    arrive TAB-separated (company names may contain commas); from Notepad
+    they arrive comma-separated. Both must give identical rows."""
+    syms = U.seed_symbols()
+    comma = ["Company Name,Industry,Symbol,Series,ISIN Code"] + \
+        [f'"Co {s}, Ltd.",Capital Goods,{s},EQ,INE{i:06d}' for i, s in enumerate(syms)]
+    tab = ["Company Name\tIndustry\tSymbol\tSeries\tISIN Code"] + \
+        [f"Co {s}, Ltd.\tCapital Goods\t{s}\tEQ\tINE{i:06d}" for i, s in enumerate(syms)]
+    a = U.parse_upload("\r\n".join(comma) + "\r\n")
+    b = U.parse_upload("﻿" + "\r\n".join(tab) + "\r\n\r\n")
+    assert a == b and a["format"] == "ind_nifty500list" and len(a["rows"]) == 500
+    assert a["rows"]["INFY"]["company"] == "Co INFY, Ltd."

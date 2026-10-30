@@ -72,7 +72,7 @@ const inr=v=>v==null?"—":"₹"+Number(v).toLocaleString("en-IN",{maximumFracti
 const n2=v=>v==null?"—":Number(v).toFixed(2);
 const pct=v=>v==null?"—":(v*100).toFixed(2)+"%";
 const sign=v=>v==null?"":v>0?"up":v<0?"down":"";
-let TAB="barbell", OV=null, SN={}, LASTUP=null;
+let TAB="barbell", OV=null, SN={}, LASTUP=null, PASTE="";
 const pw=()=>$("pw").value;
 
 document.querySelectorAll("#tabs button").forEach(b=>b.onclick=()=>{
@@ -254,8 +254,11 @@ function universe(){
       <div class="row" style="margin:0"><span>${u.active} active · ${u.tradable} tradable · ${u.sector_mapped} in the 8 sectors · last update ${esc(u.last_applied||"seed list 30 Oct 2026")}</span></div>
       ${u.unmapped_ids.length?`<div class="banner bad">No Dhan security id yet: ${u.unmapped_ids.slice(0,40).map(esc).join(", ")}${u.unmapped_ids.length>40?" …":""}</div>`:""}
       ${u.left_but_held.length?`<div class="note">Held but no longer in the index: ${u.left_but_held.map(esc).join(", ")}</div>`:""}
-      <div class="row"><input type="file" id="upFile" accept=".csv"><button class="act" id="upBtn">Upload monthly ind_nifty500list</button><span id="upMsg0" class="muted"></span></div>
-      <div class="note">Upload NSE's ind_nifty500list (Company Name, Industry, Symbol, Series, ISIN Code). Nothing changes until you review the differences and press Apply.</div></div>
+      <div class="muted" style="margin-top:10px">Monthly update: open NSE's ind_nifty500list in Excel or Notepad, press Ctrl+A then Ctrl+C, and paste everything (including the header row) here.</div>
+      <textarea id="upPaste" placeholder="Company Name,Industry,Symbol,Series,ISIN Code&#10;…" style="width:100%;min-height:140px"></textarea>
+      <div class="row"><button class="act" id="pasteBtn">Check pasted list</button><span id="pasteCount" class="muted"></span><span id="upMsg0" class="muted"></span></div>
+      <div class="row"><span class="muted">or, where file upload is allowed:</span><input type="file" id="upFile" accept=".csv"><button class="act" id="upBtn">Upload file</button></div>
+      <div class="note">Columns: Company Name, Industry, Symbol, Series, ISIN Code. Nothing changes until you review the differences and press Apply.</div></div>
     ${diffHtml}
     <div class="card"><h3>NSE trading calendar</h3>
       <div class="row" style="margin:0"><label>Covered through <input id="covThrough" value="${esc(cal.covered_through)}" style="width:110px"></label></div>
@@ -307,6 +310,9 @@ function wire(){
   const rn=$("runNow"); if(rn) rn.onclick=()=>post("/api/s23/run",{},"opMsg");
   const ub=$("upBtn"); if(ub) ub.onclick=()=>{const f=$("upFile").files[0]; if(!f){$("upMsg0").textContent="choose the file first";return;}
     const rd=new FileReader(); rd.onload=async()=>{const j=await post("/api/s23/universe/upload",{filename:f.name,csv:rd.result},"upMsg0"); if(j){LASTUP=j; render();}}; rd.readAsText(f);};
+  const pt=$("upPaste"); if(pt){pt.value=PASTE; pt.oninput=()=>{PASTE=pt.value;const n=PASTE.split("\n").filter(x=>x.trim()).length;$("pasteCount").textContent=n?`${Math.max(n-1,0)} rows pasted`:"";}; pt.oninput();}
+  const pb=$("pasteBtn"); if(pb) pb.onclick=async()=>{const t=($("upPaste").value||"").trim(); if(!t){$("upMsg0").textContent="paste the list first";return;}
+    const j=await post("/api/s23/universe/upload",{filename:"pasted-ind_nifty500list",csv:t},"upMsg0"); if(j){LASTUP=j; PASTE=""; render();}};
   const ap=$("applyUp"); if(ap) ap.onclick=async()=>{const as={};document.querySelectorAll(".asg").forEach(s=>{if(s.value) as[s.dataset.s]=s.value;});
     const j=await post("/api/s23/universe/apply",{upload_id:Number(ap.dataset.id),assignments:as},"upMsg"); if(j){LASTUP=null;}};
   const cs=$("calSave"); if(cs) cs.onclick=()=>post("/api/s23/calendar",{holidays:parseLines($("holTxt").value),special:parseLines($("spcTxt").value),covered_through:$("covThrough").value.trim()},"calMsg");

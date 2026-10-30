@@ -91,8 +91,12 @@ def parse_upload(text: str) -> dict:
     """Accepts NSE's ind_nifty500list (Company Name, Industry, Symbol,
     Series, ISIN Code) or a MW-NIFTY-500 market-watch export (SYMBOL, ...).
     Returns {format, rows: {symbol: {industry, company, isin}}}."""
-    text = text.lstrip("﻿")
-    rd = csv.DictReader(io.StringIO(text))
+    text = text.lstrip("\ufeff").strip("\r\n ")
+    # Pasted from Excel the columns are TAB-separated; from Notepad/the CSV
+    # they are comma-separated. Decide from the header line.
+    head = text.split("\n", 1)[0]
+    delim = "\t" if head.count("\t") > head.count(",") else ","
+    rd = csv.DictReader(io.StringIO(text), delimiter=delim)
     cols = {(c or "").strip().upper(): c for c in (rd.fieldnames or [])}
     rows: dict[str, dict] = {}
     if "SYMBOL" in cols and "INDUSTRY" in cols:
